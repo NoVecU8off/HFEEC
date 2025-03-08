@@ -41,7 +41,7 @@ pub struct PacketData<'a> {
     pub dest_ip: Cow<'a, str>,
     pub source_port: u16,
     pub dest_port: u16,
-    pub data: Vec<u8>,
+    pub data: &'a [u8],
 }
 
 /// Коды ошибок
@@ -355,8 +355,7 @@ impl DpdkWrapper {
                         let dst_ip = unsafe { CStr::from_ptr(dst_ip_ptr) }.to_string_lossy();
 
                         // Копируем данные пакета в Rust-вектор
-                        let data =
-                            unsafe { slice::from_raw_parts(data_ptr, data_len as usize).to_vec() };
+                        let data = unsafe { slice::from_raw_parts(data_ptr, data_len as usize) };
 
                         // Создаем структуру данных пакета
                         let packet_data = PacketData {
