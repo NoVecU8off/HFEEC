@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 // ffi.rs
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::{c_char, c_int, c_uint, c_ushort};
@@ -34,10 +35,10 @@ pub struct DpdkConfig {
 }
 
 /// Представление пакета с данными
-#[derive(Debug, Clone)]
-pub struct PacketData {
-    pub source_ip: String,
-    pub dest_ip: String,
+#[derive(Debug)]
+pub struct PacketData<'a> {
+    pub source_ip: Cow<'a, str>,
+    pub dest_ip: Cow<'a, str>,
     pub source_port: u16,
     pub dest_port: u16,
     pub data: Vec<u8>,
@@ -349,13 +350,9 @@ impl DpdkWrapper {
 
                     // Если успешно извлекли данные из пакета
                     if ret == 0 && !data_ptr.is_null() && data_len > 0 {
-                        let src_ip = unsafe { CStr::from_ptr(src_ip_ptr) }
-                            .to_string_lossy()
-                            .into_owned();
+                        let src_ip = unsafe { CStr::from_ptr(src_ip_ptr) }.to_string_lossy();
 
-                        let dst_ip = unsafe { CStr::from_ptr(dst_ip_ptr) }
-                            .to_string_lossy()
-                            .into_owned();
+                        let dst_ip = unsafe { CStr::from_ptr(dst_ip_ptr) }.to_string_lossy();
 
                         // Копируем данные пакета в Rust-вектор
                         let data =
