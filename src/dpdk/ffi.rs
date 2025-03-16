@@ -1,11 +1,14 @@
-use std::borrow::Cow;
 // ffi.rs
+use std::borrow::Cow;
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::{c_char, c_int, c_uint, c_ushort};
 use std::ptr;
 use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread::JoinHandle;
+
+use core_affinity;
 
 // Типы данных для работы с DPDK
 #[repr(C)]
@@ -18,12 +21,24 @@ pub struct RteMempool {
     _private: [u8; 0], // Непрозрачный тип для FFI
 }
 
+#[repr(C)]
+pub struct RteEthRssConf {
+    pub rss_key: *mut u8,
+    pub rss_key_len: u8,
+    pub rss_hf: u64, // Flags for RSS hash functions
+}
+
+// Константы для RSS хеширования
+pub const ETH_RSS_IP: u64 = 0x1;
+pub const ETH_RSS_TCP: u64 = 0x2;
+pub const ETH_RSS_UDP: u64 = 0x4;
+pub const ETH_RSS_SCTP: u64 = 0x8;
+
 // Структуры для FFI
 #[repr(C)]
 pub struct DpdkConfig {
     // Основная конфигурация DPDK
     pub port_id: c_ushort,
-    pub queue_id: c_ushort,
     pub num_rx_queues: c_ushort,
     pub num_tx_queues: c_ushort,
     pub promiscuous: bool,
@@ -32,6 +47,9 @@ pub struct DpdkConfig {
     pub num_mbufs: c_uint,
     pub mbuf_cache_size: c_uint,
     pub burst_size: c_uint,
+    pub enable_rss: bool,
+    pub rss_hf: u64,
+    pub use_cpu_affinity: bool,
 }
 
 /// Представление пакета с данными
@@ -42,6 +60,7 @@ pub struct PacketData<'a> {
     pub source_port: u16,
     pub dest_port: u16,
     pub data: &'a [u8],
+    pub queue_id: u16,
 }
 
 /// Коды ошибок
@@ -140,10 +159,14 @@ pub struct DpdkWrapper {
     mbuf_pool: *mut RteMempool,
     initialized: bool,
     running: Arc<AtomicBool>,
+    worker_threads: Vec<JoinHandle<()>>,
 }
 
 /// Тип колбека для обработки полученных данных
 pub type PacketHandler = Box<dyn Fn(&PacketData) + Send + 'static>;
+
+// Тип колбека для обработки пакетов с учетом очереди
+pub type QueueSpecificHandler = Arc<dyn Fn(u16, &PacketData) + Send + Sync + 'static>;
 
 impl DpdkWrapper {
     /// Создает новый экземпляр обёртки DPDK
@@ -153,6 +176,7 @@ impl DpdkWrapper {
             mbuf_pool: ptr::null_mut(),
             initialized: false,
             running: Arc::new(AtomicBool::new(false)),
+            worker_threads: Vec::new(),
         }
     }
 
@@ -216,10 +240,20 @@ impl DpdkWrapper {
             return Err(DpdkError::PortConfigError);
         }
 
-        // Создаем структуру конфигурации порта
-        // В реальном приложении здесь нужно настроить все нужные параметры
-        // Для простоты используем пустую структуру и передаем null
-        let eth_conf_ptr: *const c_void = ptr::null();
+        // Создаем структуру конфигурации порта с RSS
+        let mut eth_conf = Vec::<u8>::with_capacity(128); // Достаточный размер для rte_eth_conf
+        eth_conf.resize(128, 0);
+        let eth_conf_ptr = eth_conf.as_mut_ptr() as *mut c_void;
+
+        if self.config.enable_rss {
+            // Здесь должна быть детальная настройка RSS в структуре eth_conf
+            // Из-за сложности FFI для DPDK структур, показываем псевдокод:
+            //
+            // eth_conf->rxmode.mq_mode = ETH_MQ_RX_RSS;
+            // eth_conf->rx_adv_conf.rss_conf.rss_key = NULL;
+            // eth_conf->rx_adv_conf.rss_conf.rss_key_len = 0;
+            // eth_conf->rx_adv_conf.rss_conf.rss_hf = self.config.rss_hf;
+        }
 
         // Настраиваем порт
         let ret = unsafe {
@@ -287,109 +321,273 @@ impl DpdkWrapper {
         Ok(())
     }
 
-    /// Запускает цикл обработки пакетов с предоставленным обработчиком
-    pub fn start_packet_processing(&self, handler: PacketHandler) -> Result<(), DpdkError> {
+    pub fn start_packet_processing(&mut self, handler: PacketHandler) -> Result<(), DpdkError> {
         if !self.initialized {
             return Err(DpdkError::NotInitialized);
         }
 
-        let port_id = self.config.port_id;
-        let queue_id = self.config.queue_id;
-        let burst_size = self.config.burst_size;
-        let running = self.running.clone();
+        let port_id: u16 = self.config.port_id;
+        let burst_size: u32 = self.config.burst_size;
+        let running: Arc<AtomicBool> = self.running.clone();
+        let num_queues: u16 = self.config.num_rx_queues;
+        let use_affinity: bool = self.config.use_cpu_affinity;
 
         // Устанавливаем флаг, что мы работаем
         running.store(true, Ordering::SeqCst);
 
+        // Получаем список доступных ядер процессора для привязки потоков
+        // Используем Arc для возможности безопасного совместного использования в разных потоках
+        let core_ids = Arc::new(if use_affinity {
+            core_affinity::get_core_ids().unwrap_or_default()
+        } else {
+            Vec::new()
+        });
+
         // Создаем канал для передачи данных пакетов
         let (tx, rx) = std::sync::mpsc::channel();
 
-        // Поток для получения пакетов из DPDK и извлечения данных
-        std::thread::spawn(move || {
-            // Буфер для указателей на пакеты
-            let mut rx_pkts: Vec<*mut RteMbuf> = vec![ptr::null_mut(); burst_size as usize];
+        // Создаем отдельный поток для каждой очереди
+        for queue_id in 0..num_queues {
+            let tx_clone: std::sync::mpsc::Sender<PacketData<'_>> = tx.clone();
+            let running_clone: Arc<AtomicBool> = running.clone();
+            let core_ids_clone: Arc<Vec<core_affinity::CoreId>> = core_ids.clone();
 
-            // Буферы для извлечения данных из пакетов
-            let src_ip_buf = vec![0u8; 64]; // Буфер для source IP
-            let dst_ip_buf = vec![0u8; 64]; // Буфер для destination IP
+            // Создаем поток для очереди queue_id
+            let thread_handle: JoinHandle<()> = std::thread::spawn(move || {
+                // Привязка потока к ядру, если требуется и есть доступные ядра
+                if use_affinity && !core_ids_clone.is_empty() {
+                    let core_index: usize = (queue_id as usize) % core_ids_clone.len();
+                    if let Some(core_id) = core_ids_clone.get(core_index) {
+                        core_affinity::set_for_current(core_id.clone());
+                    }
+                }
 
-            while running.load(Ordering::SeqCst) {
-                // Получаем пакеты из очереди
-                let nb_rx = unsafe {
-                    rte_eth_rx_burst(
-                        port_id,
-                        queue_id,
-                        rx_pkts.as_mut_ptr(),
-                        burst_size as c_ushort,
-                    )
-                };
+                // Буфер для указателей на пакеты
+                let mut rx_pkts: Vec<*mut RteMbuf> = vec![ptr::null_mut(); burst_size as usize];
 
-                // Обрабатываем каждый полученный пакет
-                for i in 0..nb_rx as usize {
-                    let pkt = rx_pkts[i];
+                // Буферы для извлечения данных из пакетов
+                let src_ip_buf: Vec<u8> = vec![0u8; 64]; // Буфер для source IP
+                let dst_ip_buf: Vec<u8> = vec![0u8; 64]; // Буфер для destination IP
 
-                    // Извлекаем информацию о пакете через нашу вспомогательную C-функцию
-                    let src_ip_ptr = src_ip_buf.as_ptr() as *mut c_char;
-                    let dst_ip_ptr = dst_ip_buf.as_ptr() as *mut c_char;
-                    let mut src_port: c_ushort = 0;
-                    let mut dst_port: c_ushort = 0;
-                    let mut data_ptr: *mut u8 = ptr::null_mut();
-                    let mut data_len: c_uint = 0;
-
-                    let ret = unsafe {
-                        dpdk_extract_packet_data(
-                            pkt,
-                            src_ip_ptr,
-                            dst_ip_ptr,
-                            &mut src_port,
-                            &mut dst_port,
-                            &mut data_ptr,
-                            &mut data_len,
+                while running_clone.load(Ordering::SeqCst) {
+                    // Получаем пакеты из этой очереди
+                    let nb_rx: u16 = unsafe {
+                        rte_eth_rx_burst(
+                            port_id,
+                            queue_id, // Используем ID текущей очереди
+                            rx_pkts.as_mut_ptr(),
+                            burst_size as c_ushort,
                         )
                     };
 
-                    // Если успешно извлекли данные из пакета
-                    if ret == 0 && !data_ptr.is_null() && data_len > 0 {
-                        let src_ip = unsafe { CStr::from_ptr(src_ip_ptr) }.to_string_lossy();
+                    // Обрабатываем каждый полученный пакет
+                    for i in 0..nb_rx as usize {
+                        let pkt: *mut RteMbuf = rx_pkts[i];
 
-                        let dst_ip = unsafe { CStr::from_ptr(dst_ip_ptr) }.to_string_lossy();
+                        // Извлекаем информацию о пакете через нашу вспомогательную C-функцию
+                        let src_ip_ptr: *mut i8 = src_ip_buf.as_ptr() as *mut c_char;
+                        let dst_ip_ptr: *mut i8 = dst_ip_buf.as_ptr() as *mut c_char;
+                        let mut src_port: c_ushort = 0;
+                        let mut dst_port: c_ushort = 0;
+                        let mut data_ptr: *mut u8 = ptr::null_mut();
+                        let mut data_len: c_uint = 0;
 
-                        // Копируем данные пакета в Rust-вектор
-                        let data = unsafe { slice::from_raw_parts(data_ptr, data_len as usize) };
-
-                        // Создаем структуру данных пакета
-                        let packet_data = PacketData {
-                            source_ip: src_ip,
-                            dest_ip: dst_ip,
-                            source_port: src_port as u16,
-                            dest_port: dst_port as u16,
-                            data,
+                        let ret: i32 = unsafe {
+                            dpdk_extract_packet_data(
+                                pkt,
+                                src_ip_ptr,
+                                dst_ip_ptr,
+                                &mut src_port,
+                                &mut dst_port,
+                                &mut data_ptr,
+                                &mut data_len,
+                            )
                         };
 
-                        // Отправляем данные через канал
-                        let _ = tx.send(packet_data);
-                    }
+                        // Если успешно извлекли данные из пакета
+                        if ret == 0 && !data_ptr.is_null() && data_len > 0 {
+                            let src_ip: Cow<'_, str> =
+                                unsafe { CStr::from_ptr(src_ip_ptr) }.to_string_lossy();
+                            let dst_ip: Cow<'_, str> =
+                                unsafe { CStr::from_ptr(dst_ip_ptr) }.to_string_lossy();
 
-                    // Освобождаем память пакета после обработки
-                    unsafe { rte_pktmbuf_free(pkt) };
+                            // Копируем данные пакета в Rust-вектор
+                            let data: &[u8] =
+                                unsafe { slice::from_raw_parts(data_ptr, data_len as usize) };
+
+                            // Создаем структуру данных пакета (добавляем queue_id)
+                            let packet_data: PacketData<'_> = PacketData {
+                                source_ip: src_ip,
+                                dest_ip: dst_ip,
+                                source_port: src_port,
+                                dest_port: dst_port,
+                                data,
+                                queue_id: queue_id,
+                            };
+
+                            // Отправляем данные через канал
+                            let _ = tx_clone.send(packet_data);
+                        }
+
+                        // Освобождаем память пакета после обработки
+                        unsafe { rte_pktmbuf_free(pkt) };
+                    }
                 }
-            }
-        });
+            });
+
+            // Сохраняем handle потока
+            self.worker_threads.push(thread_handle);
+        }
 
         // Поток для обработки данных пакетов
-        std::thread::spawn(move || {
+        let handler_thread: JoinHandle<()> = std::thread::spawn(move || {
             while let Ok(packet_data) = rx.recv() {
+                if !running.load(Ordering::SeqCst) {
+                    break;
+                }
+
                 // Вызываем обработчик
                 handler(&packet_data);
             }
         });
 
+        // Сохраняем handle потока обработчика
+        self.worker_threads.push(handler_thread);
+
         Ok(())
     }
 
-    /// Останавливает обработку пакетов
-    pub fn stop(&self) {
+    pub fn start_processing_with_queue_handlers(
+        &mut self,
+        queue_handlers: QueueSpecificHandler,
+    ) -> Result<(), DpdkError> {
+        if !self.initialized {
+            return Err(DpdkError::NotInitialized);
+        }
+
+        let port_id: u16 = self.config.port_id;
+        let burst_size: u32 = self.config.burst_size;
+        let running: Arc<AtomicBool> = self.running.clone();
+        let num_queues: u16 = self.config.num_rx_queues;
+        let use_affinity: bool = self.config.use_cpu_affinity;
+
+        // Устанавливаем флаг, что мы работаем
+        running.store(true, Ordering::SeqCst);
+
+        // Получаем список доступных ядер процессора для привязки потоков
+        // Используем Arc для безопасного совместного использования между потоками
+        let core_ids: Arc<Vec<core_affinity::CoreId>> = Arc::new(if use_affinity {
+            core_affinity::get_core_ids().unwrap_or_default()
+        } else {
+            Vec::new()
+        });
+
+        // Для каждой очереди создаем отдельный поток обработки
+        for queue_id in 0..num_queues {
+            let queue_handler: Arc<dyn Fn(u16, &PacketData<'_>) + Send + Sync> =
+                queue_handlers.clone();
+            let running_clone: Arc<AtomicBool> = running.clone();
+            let core_ids_clone: Arc<Vec<core_affinity::CoreId>> = core_ids.clone(); // Клонируем Arc, не Vec
+
+            // Создаем поток для очереди queue_id
+            let thread_handle: JoinHandle<()> = std::thread::spawn(move || {
+                // Привязка потока к ядру, если требуется и есть доступные ядра
+                if use_affinity && !core_ids_clone.is_empty() {
+                    let core_index: usize = (queue_id as usize) % core_ids_clone.len();
+                    if let Some(core_id) = core_ids_clone.get(core_index) {
+                        core_affinity::set_for_current(core_id.clone());
+                    }
+                }
+
+                // Буфер для указателей на пакеты
+                let mut rx_pkts: Vec<*mut RteMbuf> = vec![ptr::null_mut(); burst_size as usize];
+
+                // Буферы для извлечения данных из пакетов
+                let src_ip_buf: Vec<u8> = vec![0u8; 64]; // Буфер для source IP
+                let dst_ip_buf: Vec<u8> = vec![0u8; 64]; // Буфер для destination IP
+
+                while running_clone.load(Ordering::SeqCst) {
+                    // Получаем пакеты из этой очереди
+                    let nb_rx: u16 = unsafe {
+                        rte_eth_rx_burst(
+                            port_id,
+                            queue_id, // Используем ID текущей очереди
+                            rx_pkts.as_mut_ptr(),
+                            burst_size as c_ushort,
+                        )
+                    };
+
+                    // Обрабатываем каждый полученный пакет
+                    for i in 0..nb_rx as usize {
+                        let pkt: *mut RteMbuf = rx_pkts[i];
+
+                        // Извлекаем информацию о пакете через нашу вспомогательную C-функцию
+                        let src_ip_ptr: *mut i8 = src_ip_buf.as_ptr() as *mut c_char;
+                        let dst_ip_ptr: *mut i8 = dst_ip_buf.as_ptr() as *mut c_char;
+                        let mut src_port: c_ushort = 0;
+                        let mut dst_port: c_ushort = 0;
+                        let mut data_ptr: *mut u8 = ptr::null_mut();
+                        let mut data_len: c_uint = 0;
+
+                        let ret: i32 = unsafe {
+                            dpdk_extract_packet_data(
+                                pkt,
+                                src_ip_ptr,
+                                dst_ip_ptr,
+                                &mut src_port,
+                                &mut dst_port,
+                                &mut data_ptr,
+                                &mut data_len,
+                            )
+                        };
+
+                        // Если успешно извлекли данные из пакета
+                        if ret == 0 && !data_ptr.is_null() && data_len > 0 {
+                            let src_ip: Cow<'_, str> =
+                                unsafe { CStr::from_ptr(src_ip_ptr) }.to_string_lossy();
+                            let dst_ip: Cow<'_, str> =
+                                unsafe { CStr::from_ptr(dst_ip_ptr) }.to_string_lossy();
+
+                            // Копируем данные пакета в Rust-вектор
+                            let data: &[u8] =
+                                unsafe { slice::from_raw_parts(data_ptr, data_len as usize) };
+
+                            // Создаем структуру данных пакета
+                            let packet_data: PacketData<'_> = PacketData {
+                                source_ip: src_ip,
+                                dest_ip: dst_ip,
+                                source_port: src_port,
+                                dest_port: dst_port,
+                                data,
+                                queue_id: queue_id,
+                            };
+
+                            // Вызываем обработчик напрямую
+                            queue_handler(queue_id, &packet_data);
+                        }
+
+                        // Освобождаем память пакета после обработки
+                        unsafe { rte_pktmbuf_free(pkt) };
+                    }
+                }
+            });
+
+            // Сохраняем handle потока
+            self.worker_threads.push(thread_handle);
+        }
+
+        Ok(())
+    }
+
+    /// Останавливает обработку пакетов и ждет завершения потоков
+    pub fn stop(&mut self) {
+        // Устанавливаем флаг остановки
         self.running.store(false, Ordering::SeqCst);
+
+        // Ждем завершения всех рабочих потоков
+        while let Some(handle) = self.worker_threads.pop() {
+            let _ = handle.join();
+        }
     }
 
     /// Освобождает ресурсы DPDK
@@ -417,18 +615,21 @@ impl Drop for DpdkWrapper {
     }
 }
 
-/// Создает конфигурацию DPDK с параметрами по умолчанию
+/// Создает конфигурацию DPDK с параметрами по умолчанию (модифицированная)
 pub fn default_dpdk_config() -> DpdkConfig {
     DpdkConfig {
         port_id: 0,
-        queue_id: 0,
-        num_rx_queues: 1,
-        num_tx_queues: 1,
+        num_rx_queues: 4, // Устанавливаем 4 очереди по умолчанию для современных NIC
+        num_tx_queues: 4, // Устанавливаем 4 очереди по умолчанию для современных NIC
         promiscuous: true,
         rx_ring_size: 1024,
         tx_ring_size: 1024,
         num_mbufs: 8191,
         mbuf_cache_size: 250,
         burst_size: 32,
+        // Новые параметры
+        enable_rss: true,
+        rss_hf: ETH_RSS_IP | ETH_RSS_TCP | ETH_RSS_UDP, // Хеширование по IP, TCP и UDP
+        use_cpu_affinity: true, // Привязка потоков к ядрам процессора по умолчанию включена
     }
 }
