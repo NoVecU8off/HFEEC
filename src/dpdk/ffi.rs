@@ -55,7 +55,6 @@ pub struct DpdkConfig {
     pub enable_rss: bool,  // Включить RSS (распределение пакетов между очередями)
     pub rss_hf: u64,       // Флаги для выбора полей хеширования RSS
     pub use_cpu_affinity: bool, // Привязка потоков к ядрам процессора
-    pub use_custom_rss_key: bool, // Использовать пользовательский ключ RSS
     pub rss_key: Option<Vec<u8>>, // Пользовательский ключ для RSS (для детерминированного распределения)
 }
 
@@ -92,7 +91,8 @@ pub struct RteEthTxMode {
 // Расширенные настройки приема
 #[repr(C)]
 pub struct RteEthRxAdvConf {
-    pub rss_conf: RteEthRssConf, // Настройки RSS. По умолчанию другие поля пустые
+    pub rss_conf: RteEthRssConf, // Настройки RSS
+                                 // По умолчанию другие поля пустые
 }
 
 // Расширенные настройки передачи
@@ -223,6 +223,9 @@ pub struct DpdkWrapper {
     worker_threads: Vec<JoinHandle<()>>, // Список рабочих потоков
 }
 
+/// Тип функции-обработчика для полученных пакетов (устарел)
+pub type PacketHandler = Box<dyn Fn(&PacketData) + Send + 'static>;
+
 /// Тип функции-обработчика пакетов с учетом номера очереди (рекомендуется использовать)
 pub type QueueSpecificHandler = Arc<dyn Fn(u16, &PacketData) + Send + Sync + 'static>;
 
@@ -299,59 +302,22 @@ impl DpdkWrapper {
         }
 
         // Создаем и инициализируем структуру конфигурации Ethernet
-        let mut eth_conf = RteEthConf {
-            rxmode: RteEthRxMode {
-                mq_mode: 0,        // Будет установлено на ETH_MQ_RX_RSS, если RSS включен
-                max_rx_pkt_len: 0, // Использовать значение по умолчанию
-                split_hdr_size: 0, // Не разделять заголовки
-                offloads: 0,       // Аппаратные ускорения отключены
-            },
-            txmode: RteEthTxMode {
-                mq_mode: 0,  // Стандартный режим передачи
-                pvid: 0,     // Не используем VLAN
-                offloads: 0, // Аппаратные ускорения отключены
-            },
-            lpbk_mode: 0, // Режим петлевого тестирования выключен
-            rx_adv_conf: RteEthRxAdvConf {
-                rss_conf: RteEthRssConf {
-                    rss_key: ptr::null_mut(), // Ключ RSS будет установлен позже если требуется
-                    rss_key_len: 0,           // Длина ключа будет установлена позже
-                    rss_hf: 0,                // Функции хеширования будут установлены позже
-                },
-            },
-            tx_adv_conf: RteEthTxAdvConf {}, // Стандартная конфигурация передачи
-            dcb_capability_en: 0,            // DCB отключен
-            fdir_conf: RteEthFdirConf {},    // Flow Director отключен
-            intr_conf: RteEthIntrConf {},    // Стандартная конфигурация прерываний
-        };
+        let mut eth_conf = default_eth_config();
 
-        // Настраиваем RSS, если он включен в конфигурации
-        if self.config.enable_rss {
-            // Для биржевых приложений оптимизируем под специфические шаблоны трафика
-
-            // 1. Устанавливаем режим мультиочереди на RSS
+        // Настраиваем RSS только если включен и у нас больше одной очереди
+        let enable_rss = self.config.enable_rss && self.config.num_rx_queues > 1;
+        if enable_rss {
+            // Устанавливаем режим мультиочереди на RSS
             eth_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
 
-            // 2. Настраиваем соответствующие функции хеширования
-            // Для биржевого трафика распределение по портам критически важно для производительности
+            // Устанавливаем оптимизированные настройки хеширования для биржевого трафика
+            // Используем непосредственно оптимизированный набор флагов, избегая избыточности
             eth_conf.rx_adv_conf.rss_conf.rss_hf = self.config.rss_hf;
 
-            // Добавляем специальные флаги для нефрагментированных пакетов,
-            // что типично для рыночных данных
-            if (self.config.rss_hf & ETH_RSS_TCP) != 0 {
-                eth_conf.rx_adv_conf.rss_conf.rss_hf |= ETH_RSS_NONFRAG_IPV4_TCP;
-            }
-            if (self.config.rss_hf & ETH_RSS_UDP) != 0 {
-                eth_conf.rx_adv_conf.rss_conf.rss_hf |= ETH_RSS_NONFRAG_IPV4_UDP;
-            }
-
-            // Используем пользовательский ключ RSS, если он предоставлен
-            // (важно для детерминированного распределения пакетов)
-            if self.config.use_custom_rss_key {
-                if let Some(ref key) = self.config.rss_key {
-                    eth_conf.rx_adv_conf.rss_conf.rss_key = key.as_ptr() as *mut u8;
-                    eth_conf.rx_adv_conf.rss_conf.rss_key_len = key.len() as u8;
-                }
+            // Устанавливаем пользовательский ключ RSS если он предоставлен
+            if let Some(ref key) = self.config.rss_key {
+                eth_conf.rx_adv_conf.rss_conf.rss_key = key.as_ptr() as *mut u8;
+                eth_conf.rx_adv_conf.rss_conf.rss_key_len = key.len() as u8;
             }
         }
 
@@ -585,6 +551,34 @@ impl Drop for DpdkWrapper {
     }
 }
 
+fn default_eth_config() -> RteEthConf {
+    RteEthConf {
+        rxmode: RteEthRxMode {
+            mq_mode: 0,        // Будет установлено на ETH_MQ_RX_RSS, если RSS включен
+            max_rx_pkt_len: 0, // Использовать значение по умолчанию
+            split_hdr_size: 0, // Не разделять заголовки
+            offloads: 0,       // Аппаратные ускорения отключены
+        },
+        txmode: RteEthTxMode {
+            mq_mode: 0,  // Стандартный режим передачи
+            pvid: 0,     // Не используем VLAN
+            offloads: 0, // Аппаратные ускорения отключены
+        },
+        lpbk_mode: 0, // Режим петлевого тестирования выключен
+        rx_adv_conf: RteEthRxAdvConf {
+            rss_conf: RteEthRssConf {
+                rss_key: ptr::null_mut(), // Ключ RSS будет установлен позже если требуется
+                rss_key_len: 0,           // Длина ключа будет установлена позже
+                rss_hf: 0,                // Функции хеширования будут установлены позже
+            },
+        },
+        tx_adv_conf: RteEthTxAdvConf {}, // Стандартная конфигурация передачи
+        dcb_capability_en: 0,            // DCB отключен
+        fdir_conf: RteEthFdirConf {},    // Flow Director отключен
+        intr_conf: RteEthIntrConf {},    // Стандартная конфигурация прерываний
+    }
+}
+
 /// Создает оптимизированную конфигурацию DPDK с параметрами по умолчанию для биржевого приложения
 pub fn default_dpdk_config() -> DpdkConfig {
     DpdkConfig {
@@ -597,11 +591,12 @@ pub fn default_dpdk_config() -> DpdkConfig {
         num_mbufs: 8191,      // Количество буферов пакетов (обычно 2^n - 1)
         mbuf_cache_size: 250, // Размер кэша буферов для каждого потока
         burst_size: 32,       // Пакетное чтение по 32 пакета за вызов
-        // Параметры RSS
+        // Параметры RSS - оптимизировано для биржевого трафика
         enable_rss: true, // Включаем RSS для распределения нагрузки
-        rss_hf: ETH_RSS_IP | ETH_RSS_TCP | ETH_RSS_UDP | ETH_RSS_L4_DST_ONLY, // Оптимизация для бирж - хеширование по порту назначения
+        // Упрощенная и оптимизированная конфигурация хеширования для биржевого трафика:
+        // Фокус на нефрагментированных пакетах и порте назначения
+        rss_hf: ETH_RSS_NONFRAG_IPV4_TCP | ETH_RSS_NONFRAG_IPV4_UDP | ETH_RSS_L4_DST_ONLY,
         use_cpu_affinity: true, // Привязываем потоки к ядрам для лучшей производительности
-        use_custom_rss_key: false, // Не используем пользовательский ключ RSS
         rss_key: None,          // Ключ RSS не указан (будет использован стандартный)
     }
 }
