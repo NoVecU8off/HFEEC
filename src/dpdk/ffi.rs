@@ -1,5 +1,4 @@
 // ffi.rs
-use std::borrow::Cow;
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::{c_char, c_int, c_uint, c_ushort};
 use std::ptr;
@@ -9,6 +8,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use core_affinity;
+use crossbeam::queue::ArrayQueue;
 
 // Базовые типы данных для работы с DPDK
 #[repr(C)]
@@ -114,14 +114,14 @@ pub struct RteEthIntrConf {
 }
 
 /// Представление извлеченных данных пакета для обработки в Rust
-#[derive(Debug)]
-pub struct PacketData<'a> {
-    pub source_ip: Cow<'a, str>, // IP-адрес источника (в текстовом виде)
-    pub dest_ip: Cow<'a, str>,   // IP-адрес назначения (в текстовом виде)
-    pub source_port: u16,        // Порт источника
-    pub dest_port: u16,          // Порт назначения
-    pub data: &'a [u8],          // Данные пакета (полезная нагрузка)
-    pub queue_id: u16,           // Номер очереди, в которую был направлен пакет
+#[repr(C, align(64))]
+pub struct PacketData {
+    pub source_port: u16,  // Порт источника
+    pub dest_port: u16,    // Порт назначения
+    pub queue_id: u16,     // Номер очереди, в которую был направлен пакет
+    pub source_ip: String, // IP-адрес источника (в текстовом виде)
+    pub dest_ip: String,   // IP-адрес назначения (в текстовом виде)
+    pub data: Vec<u8>,     // Данные пакета (полезная нагрузка)
 }
 
 /// Коды ошибок для DPDK операций
@@ -212,6 +212,83 @@ extern "C" {
         data_out: *mut *mut u8,      // Выходной указатель на данные пакета
         data_len_out: *mut c_uint,   // Выходная переменная для длины данных
     ) -> c_int; // Возвращает 0 при успехе, код ошибки иначе
+}
+
+// Потокобезопасная обертка для указателя PacketData
+#[derive(Copy, Clone)]
+struct PacketDataPtr(*mut PacketData);
+
+unsafe impl Send for PacketDataPtr {}
+unsafe impl Sync for PacketDataPtr {}
+
+impl PacketDataPtr {
+    fn new(ptr: *mut PacketData) -> Self {
+        PacketDataPtr(ptr)
+    }
+
+    fn get(&self) -> *mut PacketData {
+        self.0
+    }
+}
+
+pub struct PacketDataPool {
+    queue: Arc<ArrayQueue<PacketDataPtr>>,
+    _storage: Vec<Box<PacketData>>, // Держим владение всеми структурами
+}
+
+impl PacketDataPool {
+    pub fn new(capacity: usize) -> Self {
+        let queue = Arc::new(ArrayQueue::new(capacity));
+        let mut _storage = Vec::with_capacity(capacity);
+
+        for _ in 0..capacity {
+            // Создаем заготовки с предварительно выделенной памятью
+            let mut data = Box::new(PacketData {
+                source_port: 0,
+                dest_port: 0,
+                queue_id: 0,
+                source_ip: String::with_capacity(16),
+                dest_ip: String::with_capacity(16),
+                data: Vec::with_capacity(2048),
+            });
+
+            // Оборачиваем указатель в нашу безопасную обертку
+            // Получаем указатель напрямую из разыменования
+            let ptr = &mut *data as *mut PacketData;
+            if let Err(_) = queue.push(PacketDataPtr::new(ptr)) {
+                panic!("Failed to push to packet pool queue - this should never happen");
+            };
+            _storage.push(data);
+        }
+
+        Self { queue, _storage }
+    }
+
+    pub fn acquire(&self) -> Option<PacketDataHandle> {
+        self.queue.pop().map(|ptr_wrapper| PacketDataHandle {
+            data: unsafe { &mut *ptr_wrapper.get() },
+            pool: self.queue.clone(),
+            ptr_wrapper,
+        })
+    }
+}
+
+pub struct PacketDataHandle<'a> {
+    pub data: &'a mut PacketData,
+    pool: Arc<ArrayQueue<PacketDataPtr>>,
+    ptr_wrapper: PacketDataPtr,
+}
+
+impl<'a> Drop for PacketDataHandle<'a> {
+    fn drop(&mut self) {
+        // Очищаем строки и вектор, но сохраняем выделенную емкость
+        self.data.source_ip.clear();
+        self.data.dest_ip.clear();
+        self.data.data.clear();
+
+        // Возвращаем в пул (копирование разрешено благодаря реализации Copy)
+        let _ = self.pool.push(self.ptr_wrapper);
+    }
 }
 
 /// Основная обёртка для работы с DPDK
@@ -402,6 +479,9 @@ impl DpdkWrapper {
         let num_queues: u16 = self.config.num_rx_queues;
         let use_affinity: bool = self.config.use_cpu_affinity;
 
+        // Пул достаточного размера (берем с запасом)
+        let packet_pool = Arc::new(PacketDataPool::new(burst_size as usize * 4));
+
         // Устанавливаем флаг, что обработка запущена
         running.store(true, Ordering::SeqCst);
 
@@ -415,10 +495,10 @@ impl DpdkWrapper {
 
         // Для каждой очереди создаем отдельный поток обработки
         for queue_id in 0..num_queues {
-            let queue_handler: Arc<dyn Fn(u16, &PacketData<'_>) + Send + Sync> =
-                queue_handlers.clone();
-            let running_clone: Arc<AtomicBool> = running.clone();
-            let core_ids_clone: Arc<Vec<core_affinity::CoreId>> = core_ids.clone(); // Клонируем Arc, не Vec
+            let queue_handler = queue_handlers.clone();
+            let running_clone = running.clone();
+            let core_ids_clone = core_ids.clone(); // Клонируем Arc, не Vec
+            let packet_pool_clone = packet_pool.clone();
 
             // Создаем поток для обработки очереди с ID = queue_id
             let thread_handle: JoinHandle<()> = std::thread::spawn(move || {
@@ -433,9 +513,9 @@ impl DpdkWrapper {
                 // Буфер для указателей на пакеты (для пакетного чтения)
                 let mut rx_pkts: Vec<*mut RteMbuf> = vec![ptr::null_mut(); burst_size as usize];
 
-                // Буферы для извлечения данных из пакетов
-                let src_ip_buf: Vec<u8> = vec![0u8; 64]; // Буфер для IP-адреса источника
-                let dst_ip_buf: Vec<u8> = vec![0u8; 64]; // Буфер для IP-адреса назначения
+                // Буферы для извлечения данных из пакетов (теперь на стеке)
+                let mut src_ip_buf = [0u8; 64];
+                let mut dst_ip_buf = [0u8; 64];
 
                 // Основной цикл обработки пакетов
                 while running_clone.load(Ordering::SeqCst) {
@@ -454,8 +534,8 @@ impl DpdkWrapper {
                         let pkt: *mut RteMbuf = rx_pkts[i];
 
                         // Извлекаем информацию о пакете через нашу вспомогательную C-функцию
-                        let src_ip_ptr: *mut i8 = src_ip_buf.as_ptr() as *mut c_char;
-                        let dst_ip_ptr: *mut i8 = dst_ip_buf.as_ptr() as *mut c_char;
+                        let src_ip_ptr: *mut i8 = src_ip_buf.as_mut_ptr() as *mut c_char;
+                        let dst_ip_ptr: *mut i8 = dst_ip_buf.as_mut_ptr() as *mut c_char;
                         let mut src_port: c_ushort = 0;
                         let mut dst_port: c_ushort = 0;
                         let mut data_ptr: *mut u8 = ptr::null_mut();
@@ -476,28 +556,32 @@ impl DpdkWrapper {
 
                         // Если успешно извлекли данные из пакета
                         if ret == 0 && !data_ptr.is_null() && data_len > 0 {
-                            // Преобразуем C-строки IP-адресов в Rust-строки
-                            let src_ip: Cow<'_, str> =
-                                unsafe { CStr::from_ptr(src_ip_ptr) }.to_string_lossy();
-                            let dst_ip: Cow<'_, str> =
-                                unsafe { CStr::from_ptr(dst_ip_ptr) }.to_string_lossy();
+                            // Получаем структуру из пула
+                            if let Some(packet_handle) = packet_pool_clone.acquire() {
+                                // Заполняем данные
+                                packet_handle.data.source_port = src_port;
+                                packet_handle.data.dest_port = dst_port;
+                                packet_handle.data.queue_id = queue_id;
 
-                            // Создаем ссылку на данные пакета без копирования (zero-copy)
-                            let data: &[u8] =
-                                unsafe { slice::from_raw_parts(data_ptr, data_len as usize) };
+                                // IP-адреса из C-строк
+                                let src_ip_str =
+                                    unsafe { CStr::from_ptr(src_ip_ptr) }.to_string_lossy();
+                                packet_handle.data.source_ip.push_str(&src_ip_str);
 
-                            // Создаем структуру данных пакета для обработки в Rust-коде
-                            let packet_data: PacketData<'_> = PacketData {
-                                source_ip: src_ip,
-                                dest_ip: dst_ip,
-                                source_port: src_port,
-                                dest_port: dst_port,
-                                data,
-                                queue_id: queue_id,
-                            };
+                                let dst_ip_str =
+                                    unsafe { CStr::from_ptr(dst_ip_ptr) }.to_string_lossy();
+                                packet_handle.data.dest_ip.push_str(&dst_ip_str);
 
-                            // Вызываем пользовательский обработчик пакета
-                            queue_handler(queue_id, &packet_data);
+                                // Копируем данные пакета
+                                let data_slice =
+                                    unsafe { slice::from_raw_parts(data_ptr, data_len as usize) };
+                                packet_handle.data.data.extend_from_slice(data_slice);
+
+                                // Вызываем пользовательский обработчик пакета
+                                queue_handler(queue_id, packet_handle.data);
+
+                                // PacketDataHandle автоматически вернет структуру в пул
+                            }
                         }
 
                         // Освобождаем память пакета после обработки
