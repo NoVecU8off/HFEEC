@@ -8,7 +8,8 @@ use std::thread::JoinHandle;
 
 use core_affinity;
 
-use super::packet::{PacketData, PacketDataPool};
+use super::packet::PacketData;
+use super::pool::PacketDataPool;
 
 #[repr(C)]
 pub struct RteMbuf {
