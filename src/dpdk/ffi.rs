@@ -1,13 +1,14 @@
+// ffi.rs
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::{c_char, c_int, c_uint, c_ushort};
 use std::ptr;
-use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use core_affinity;
-use crossbeam::queue::ArrayQueue;
+
+use super::packet::{PacketData, PacketDataPool};
 
 #[repr(C)]
 pub struct RteMbuf {
@@ -94,16 +95,6 @@ pub struct RteEthFdirConf {}
 #[repr(C)]
 pub struct RteEthIntrConf {}
 
-#[repr(C, align(64))]
-pub struct PacketData {
-    pub source_port: u16,
-    pub dest_port: u16,
-    pub queue_id: u16,
-    pub source_ip: String,
-    pub dest_ip: String,
-    pub data: Vec<u8>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DpdkError {
     Success = 0,
@@ -184,77 +175,6 @@ extern "C" {
         data_out: *mut *mut u8,
         data_len_out: *mut c_uint,
     ) -> c_int;
-}
-
-#[derive(Copy, Clone)]
-struct PacketDataPtr(*mut PacketData);
-
-unsafe impl Send for PacketDataPtr {}
-unsafe impl Sync for PacketDataPtr {}
-
-impl PacketDataPtr {
-    fn new(ptr: *mut PacketData) -> Self {
-        PacketDataPtr(ptr)
-    }
-
-    fn get(&self) -> *mut PacketData {
-        self.0
-    }
-}
-
-pub struct PacketDataPool {
-    queue: Arc<ArrayQueue<PacketDataPtr>>,
-    _storage: Vec<Box<PacketData>>,
-}
-
-impl PacketDataPool {
-    pub fn new(capacity: usize) -> Self {
-        let queue = Arc::new(ArrayQueue::new(capacity));
-        let mut _storage = Vec::with_capacity(capacity);
-
-        for _ in 0..capacity {
-            let mut data = Box::new(PacketData {
-                source_port: 0,
-                dest_port: 0,
-                queue_id: 0,
-                source_ip: String::with_capacity(16),
-                dest_ip: String::with_capacity(16),
-                data: Vec::with_capacity(2048),
-            });
-
-            let ptr = &mut *data as *mut PacketData;
-            if let Err(_) = queue.push(PacketDataPtr::new(ptr)) {
-                panic!("Failed to push to packet pool queue - this should never happen");
-            };
-            _storage.push(data);
-        }
-
-        Self { queue, _storage }
-    }
-
-    pub fn acquire(&self) -> Option<PacketDataHandle> {
-        self.queue.pop().map(|ptr_wrapper| PacketDataHandle {
-            data: unsafe { &mut *ptr_wrapper.get() },
-            pool: self.queue.clone(),
-            ptr_wrapper,
-        })
-    }
-}
-
-pub struct PacketDataHandle<'a> {
-    pub data: &'a mut PacketData,
-    pool: Arc<ArrayQueue<PacketDataPtr>>,
-    ptr_wrapper: PacketDataPtr,
-}
-
-impl<'a> Drop for PacketDataHandle<'a> {
-    fn drop(&mut self) {
-        self.data.source_ip.clear();
-        self.data.dest_ip.clear();
-        self.data.data.clear();
-
-        let _ = self.pool.push(self.ptr_wrapper);
-    }
 }
 
 pub struct DpdkWrapper {
@@ -421,7 +341,8 @@ impl DpdkWrapper {
         let num_queues: u16 = self.config.num_rx_queues;
         let use_affinity: bool = self.config.use_cpu_affinity;
 
-        let packet_pool = Arc::new(PacketDataPool::new(burst_size as usize * 4));
+        let packet_pool: Arc<PacketDataPool> =
+            Arc::new(PacketDataPool::new(burst_size as usize * 4));
 
         running.store(true, Ordering::SeqCst);
 
@@ -433,22 +354,22 @@ impl DpdkWrapper {
 
         for queue_id in 0..num_queues {
             let queue_handler = queue_handlers.clone();
-            let running_clone = running.clone();
-            let core_ids_clone = core_ids.clone();
-            let packet_pool_clone = packet_pool.clone();
+            let running_clone: Arc<AtomicBool> = running.clone();
+            let core_ids_clone: Arc<Vec<core_affinity::CoreId>> = core_ids.clone();
+            let packet_pool_clone: Arc<PacketDataPool> = packet_pool.clone();
 
             let thread_handle: JoinHandle<()> = std::thread::spawn(move || {
                 if use_affinity && !core_ids_clone.is_empty() {
                     let core_index: usize = (queue_id as usize) % core_ids_clone.len();
                     if let Some(core_id) = core_ids_clone.get(core_index) {
-                        core_affinity::set_for_current(core_id.clone());
+                        core_affinity::set_for_current(*core_id);
                     }
                 }
 
                 let mut rx_pkts: Vec<*mut RteMbuf> = vec![ptr::null_mut(); burst_size as usize];
 
-                let mut src_ip_buf = [0u8; 64];
-                let mut dst_ip_buf = [0u8; 64];
+                let mut src_ip_buf: [u8; 64] = [0u8; 64];
+                let mut dst_ip_buf: [u8; 64] = [0u8; 64];
 
                 while running_clone.load(Ordering::SeqCst) {
                     let nb_rx: u16 = unsafe {
@@ -470,7 +391,7 @@ impl DpdkWrapper {
                         let mut data_ptr: *mut u8 = ptr::null_mut();
                         let mut data_len: c_uint = 0;
 
-                        let ret: i32 = unsafe {
+                        let ret = unsafe {
                             dpdk_extract_packet_data(
                                 pkt,
                                 src_ip_ptr,
@@ -483,25 +404,30 @@ impl DpdkWrapper {
                         };
 
                         if ret == 0 && !data_ptr.is_null() && data_len > 0 {
-                            if let Some(packet_handle) = packet_pool_clone.acquire() {
-                                packet_handle.data.source_port = src_port;
-                                packet_handle.data.dest_port = dst_port;
-                                packet_handle.data.queue_id = queue_id;
+                            let mut packet: Box<PacketData> = packet_pool_clone.acquire();
 
-                                let src_ip_str =
-                                    unsafe { CStr::from_ptr(src_ip_ptr) }.to_string_lossy();
-                                packet_handle.data.source_ip.push_str(&src_ip_str);
+                            packet.source_port = src_port;
+                            packet.dest_port = dst_port;
+                            packet.queue_id = queue_id;
 
-                                let dst_ip_str =
-                                    unsafe { CStr::from_ptr(dst_ip_ptr) }.to_string_lossy();
-                                packet_handle.data.dest_ip.push_str(&dst_ip_str);
+                            let src_ip_cstr: &CStr = unsafe { CStr::from_ptr(src_ip_ptr) };
+                            let src_ip_bytes: &[u8] = src_ip_cstr.to_bytes();
+                            packet.source_ip_len = std::cmp::min(src_ip_bytes.len(), 16);
+                            packet.source_ip[..packet.source_ip_len]
+                                .copy_from_slice(&src_ip_bytes[..packet.source_ip_len]);
 
-                                let data_slice =
-                                    unsafe { slice::from_raw_parts(data_ptr, data_len as usize) };
-                                packet_handle.data.data.extend_from_slice(data_slice);
+                            let dst_ip_cstr: &CStr = unsafe { CStr::from_ptr(dst_ip_ptr) };
+                            let dst_ip_bytes: &[u8] = dst_ip_cstr.to_bytes();
+                            packet.dest_ip_len = std::cmp::min(dst_ip_bytes.len(), 16);
+                            packet.dest_ip[..packet.dest_ip_len]
+                                .copy_from_slice(&dst_ip_bytes[..packet.dest_ip_len]);
 
-                                queue_handler(queue_id, packet_handle.data);
-                            }
+                            packet.data = data_ptr;
+                            packet.data_len = data_len as usize;
+
+                            queue_handler(queue_id, &packet);
+
+                            packet_pool_clone.release(packet);
                         }
 
                         unsafe { rte_pktmbuf_free(pkt) };

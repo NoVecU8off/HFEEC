@@ -4,14 +4,14 @@ use std::process::Command;
 fn main() {
     // Обнаружение путей к DPDK
     let dpdk_include_path = Command::new("pkg-config")
-        .args(&["--cflags", "libdpdk"])
+        .args(["--cflags", "libdpdk"])
         .output()
         .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
         .unwrap_or_else(|_| "-I/usr/local/include/dpdk".to_string());
 
     // Получаем флаги линковки для DPDK
     let dpdk_libs = Command::new("pkg-config")
-        .args(&["--libs", "libdpdk"])
+        .args(["--libs", "libdpdk"])
         .output()
         .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
         .unwrap_or_else(|_| {
