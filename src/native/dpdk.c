@@ -1,4 +1,4 @@
-// dpdk_helpers.c
+// dpdk.c
 #include <rte_eal.h>
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
