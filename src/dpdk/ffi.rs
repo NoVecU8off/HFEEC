@@ -214,13 +214,13 @@ impl DpdkWrapper {
             .map(|arg| arg.as_ptr() as *mut c_char)
             .collect();
 
-        let ret = unsafe { rte_eal_init(c_args.len() as c_int, c_argv.as_mut_ptr()) };
+        let ret: i32 = unsafe { rte_eal_init(c_args.len() as c_int, c_argv.as_mut_ptr()) };
 
         if ret < 0 {
             return Err(DpdkError::InitError);
         }
 
-        let pool_name = CString::new("mbuf_pool").unwrap();
+        let pool_name: CString = CString::new("mbuf_pool").unwrap();
         self.mbuf_pool = unsafe {
             rte_pktmbuf_pool_create(
                 pool_name.as_ptr(),
@@ -246,16 +246,16 @@ impl DpdkWrapper {
             return Err(DpdkError::NotInitialized);
         }
 
-        let port_id = self.config.port_id;
+        let port_id: u16 = self.config.port_id;
 
-        let is_valid = unsafe { rte_eth_dev_is_valid_port(port_id) };
+        let is_valid: i32 = unsafe { rte_eth_dev_is_valid_port(port_id) };
         if is_valid == 0 {
             return Err(DpdkError::PortConfigError);
         }
 
-        let mut eth_conf = default_eth_config();
+        let mut eth_conf: RteEthConf = default_eth_config();
 
-        let enable_rss = self.config.enable_rss && self.config.num_rx_queues > 1;
+        let enable_rss: bool = self.config.enable_rss && self.config.num_rx_queues > 1;
         if enable_rss {
             eth_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
 
@@ -267,7 +267,7 @@ impl DpdkWrapper {
             }
         }
 
-        let ret = unsafe {
+        let ret: i32 = unsafe {
             rte_eth_dev_configure(
                 port_id,
                 self.config.num_rx_queues,
@@ -281,7 +281,7 @@ impl DpdkWrapper {
         }
 
         for q in 0..self.config.num_rx_queues {
-            let ret = unsafe {
+            let ret: i32 = unsafe {
                 rte_eth_rx_queue_setup(
                     port_id,
                     q,
@@ -298,7 +298,7 @@ impl DpdkWrapper {
         }
 
         for q in 0..self.config.num_tx_queues {
-            let ret = unsafe {
+            let ret: i32 = unsafe {
                 rte_eth_tx_queue_setup(
                     port_id,
                     q,
@@ -313,7 +313,7 @@ impl DpdkWrapper {
             }
         }
 
-        let ret = unsafe { rte_eth_dev_start(port_id) };
+        let ret: i32 = unsafe { rte_eth_dev_start(port_id) };
         if ret < 0 {
             return Err(DpdkError::PortConfigError);
         }
@@ -354,7 +354,7 @@ impl DpdkWrapper {
         });
 
         for queue_id in 0..num_queues {
-            let queue_handler = queue_handlers.clone();
+            let queue_handler: Arc<dyn Fn(u16, &PacketData) + Send + Sync> = queue_handlers.clone();
             let running_clone: Arc<AtomicBool> = running.clone();
             let core_ids_clone: Arc<Vec<core_affinity::CoreId>> = core_ids.clone();
             let packet_pool_clone: Arc<PacketDataPool> = packet_pool.clone();
@@ -392,7 +392,7 @@ impl DpdkWrapper {
                         let mut data_ptr: *mut u8 = ptr::null_mut();
                         let mut data_len: c_uint = 0;
 
-                        let ret = unsafe {
+                        let ret: i32 = unsafe {
                             dpdk_extract_packet_data(
                                 pkt,
                                 src_ip_ptr,
