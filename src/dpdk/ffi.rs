@@ -405,7 +405,7 @@ impl DpdkWrapper {
                         };
 
                         if ret == 0 && !data_ptr.is_null() && data_len > 0 {
-                            let mut packet: Box<PacketData> = packet_pool_clone.acquire();
+                            let mut packet: PacketData = packet_pool_clone.acquire();
 
                             packet.source_port = src_port;
                             packet.dest_port = dst_port;

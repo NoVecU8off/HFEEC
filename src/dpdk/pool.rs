@@ -6,7 +6,7 @@ use crossbeam::queue::ArrayQueue;
 use super::packet::PacketData;
 
 pub struct PacketDataPool {
-    queue: Arc<ArrayQueue<Box<PacketData>>>,
+    queue: Arc<ArrayQueue<PacketData>>,
 }
 
 impl PacketDataPool {
@@ -14,7 +14,7 @@ impl PacketDataPool {
         let queue = Arc::new(ArrayQueue::new(capacity));
 
         for _ in 0..capacity {
-            let data = Box::new(PacketData::new());
+            let data = PacketData::new();
             if queue.push(data).is_err() {
                 panic!("Failed to push to packet pool queue");
             }
@@ -23,14 +23,14 @@ impl PacketDataPool {
         Self { queue }
     }
 
-    pub fn acquire(&self) -> Box<PacketData> {
+    pub fn acquire(&self) -> PacketData {
         match self.queue.pop() {
             Some(packet) => packet,
-            None => Box::new(PacketData::new()),
+            None => PacketData::new(),
         }
     }
 
-    pub fn release(&self, mut packet: Box<PacketData>) {
+    pub fn release(&self, mut packet: PacketData) {
         packet.source_ip_len = 0;
         packet.dest_ip_len = 0;
         packet.data = std::ptr::null();
