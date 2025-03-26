@@ -188,7 +188,7 @@ pub struct DpdkWrapper {
     worker_threads: Vec<JoinHandle<()>>,
 }
 
-pub type QueueSpecificHandler = Arc<dyn Fn(u16, &PacketData) + Send + Sync + 'static>;
+pub type PacketDataHandler = Arc<dyn Fn(u16, &PacketData) + Send + Sync + 'static>;
 
 impl DpdkWrapper {
     pub fn new(config: DpdkConfig) -> Self {
@@ -330,10 +330,7 @@ impl DpdkWrapper {
         Ok(())
     }
 
-    pub fn start_processing_with_queue_handlers(
-        &mut self,
-        queue_handlers: QueueSpecificHandler,
-    ) -> Result<(), DpdkError> {
+    pub fn start_processing(&mut self, queue_handler: PacketDataHandler) -> Result<(), DpdkError> {
         if !self.initialized {
             return Err(DpdkError::NotInitialized);
         }
@@ -356,7 +353,7 @@ impl DpdkWrapper {
         });
 
         for queue_id in 0..num_queues {
-            let queue_handler: Arc<dyn Fn(u16, &PacketData) + Send + Sync> = queue_handlers.clone();
+            let queue_handler: Arc<dyn Fn(u16, &PacketData) + Send + Sync> = queue_handler.clone();
             let running_clone: Arc<AtomicBool> = running.clone();
             let core_ids_clone: Arc<Vec<core_affinity::CoreId>> = core_ids.clone();
             let packet_pool_clone: Arc<PacketDataPool> = packet_pool.clone();
