@@ -24,15 +24,18 @@
  * @return 0 в случае успеха, ненулевое значение в случае ошибки
  */
 int dpdk_extract_packet_data(
-    const struct rte_mbuf *pkt, 
-    char *src_ip_out, 
-    char *dst_ip_out, 
-    uint16_t *src_port_out, 
-    uint16_t *dst_port_out, 
-    uint8_t **data_out, 
+    const struct rte_mbuf *pkt,
+    uint8_t **src_ip_out,
+    uint32_t *src_ip_len_out,
+    uint8_t **dst_ip_out,
+    uint32_t *dst_ip_len_out,
+    uint16_t *src_port_out,
+    uint16_t *dst_port_out,
+    uint8_t **data_out,
     uint32_t *data_len_out
 ) {
-    if (!pkt || !src_ip_out || !dst_ip_out || !src_port_out || !dst_port_out || !data_out || !data_len_out) {
+    if (!pkt || !src_ip_out || !src_ip_len_out || !dst_ip_out || !dst_ip_len_out || 
+        !src_port_out || !dst_port_out || !data_out || !data_len_out) {
         return -1; // Некорректные параметры
     }
     
@@ -41,6 +44,10 @@ int dpdk_extract_packet_data(
     *dst_port_out = 0;
     *data_out = NULL;
     *data_len_out = 0;
+    *src_ip_out = NULL;
+    *src_ip_len_out = 0;
+    *dst_ip_out = NULL;
+    *dst_ip_len_out = 0;
     
     // Получение указателя на заголовок Ethernet
     struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
@@ -53,9 +60,11 @@ int dpdk_extract_packet_data(
     // Получение указателя на заголовок IP
     struct rte_ipv4_hdr *ip_hdr = (struct rte_ipv4_hdr *)(eth_hdr + 1);
     
-    // Преобразование IP-адресов в строки
-    inet_ntop(AF_INET, &ip_hdr->src_addr, src_ip_out, INET_ADDRSTRLEN);
-    inet_ntop(AF_INET, &ip_hdr->dst_addr, dst_ip_out, INET_ADDRSTRLEN);
+    // Устанавливаем указатели на IP-адреса
+    *src_ip_out = (uint8_t *)&ip_hdr->src_addr;
+    *src_ip_len_out = sizeof(ip_hdr->src_addr);
+    *dst_ip_out = (uint8_t *)&ip_hdr->dst_addr;
+    *dst_ip_len_out = sizeof(ip_hdr->dst_addr);
     
     uint16_t payload_offset = 0;
     

@@ -1,5 +1,5 @@
 // ffi.rs
-use std::ffi::{c_void, CStr, CString};
+use std::ffi::{c_void, CString};
 use std::os::raw::{c_char, c_int, c_uint, c_ushort};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -169,12 +169,14 @@ extern "C" {
 
     fn dpdk_extract_packet_data(
         pkt: *const RteMbuf,
-        src_ip_out: *mut c_char,
-        dst_ip_out: *mut c_char,
-        src_port_out: *mut c_ushort,
-        dst_port_out: *mut c_ushort,
+        src_ip_out: *mut *mut u8,
+        src_ip_len_out: *mut u32,
+        dst_ip_out: *mut *mut u8,
+        dst_ip_len_out: *mut u32,
+        src_port_out: *mut u16,
+        dst_port_out: *mut u16,
         data_out: *mut *mut u8,
-        data_len_out: *mut c_uint,
+        data_len_out: *mut u32,
     ) -> c_int;
 }
 
@@ -369,9 +371,6 @@ impl DpdkWrapper {
 
                 let mut rx_pkts: Vec<*mut RteMbuf> = vec![ptr::null_mut(); burst_size as usize];
 
-                let mut src_ip_buf: [u8; 64] = [0u8; 64];
-                let mut dst_ip_buf: [u8; 64] = [0u8; 64];
-
                 while running_clone.load(Ordering::SeqCst) {
                     let nb_rx: u16 = unsafe {
                         rte_eth_rx_burst(
@@ -385,18 +384,22 @@ impl DpdkWrapper {
                     for i in 0..nb_rx as usize {
                         let pkt: *mut RteMbuf = rx_pkts[i];
 
-                        let src_ip_ptr: *mut i8 = src_ip_buf.as_mut_ptr() as *mut c_char;
-                        let dst_ip_ptr: *mut i8 = dst_ip_buf.as_mut_ptr() as *mut c_char;
-                        let mut src_port: c_ushort = 0;
-                        let mut dst_port: c_ushort = 0;
+                        let mut src_ip_ptr: *mut u8 = ptr::null_mut();
+                        let mut src_ip_len: u32 = 0;
+                        let mut dst_ip_ptr: *mut u8 = ptr::null_mut();
+                        let mut dst_ip_len: u32 = 0;
+                        let mut src_port: u16 = 0;
+                        let mut dst_port: u16 = 0;
                         let mut data_ptr: *mut u8 = ptr::null_mut();
-                        let mut data_len: c_uint = 0;
+                        let mut data_len: u32 = 0;
 
                         let ret: i32 = unsafe {
                             dpdk_extract_packet_data(
                                 pkt,
-                                src_ip_ptr,
-                                dst_ip_ptr,
+                                &mut src_ip_ptr,
+                                &mut src_ip_len,
+                                &mut dst_ip_ptr,
+                                &mut dst_ip_len,
                                 &mut src_port,
                                 &mut dst_port,
                                 &mut data_ptr,
@@ -411,27 +414,26 @@ impl DpdkWrapper {
                             packet.dest_port = dst_port;
                             packet.queue_id = queue_id;
 
-                            let src_ip_cstr: &CStr = unsafe { CStr::from_ptr(src_ip_ptr) };
-                            let src_ip_bytes: &[u8] = src_ip_cstr.to_bytes();
-                            packet.source_ip_len = std::cmp::min(src_ip_bytes.len(), 16);
-                            packet.source_ip[..packet.source_ip_len]
-                                .copy_from_slice(&src_ip_bytes[..packet.source_ip_len]);
-
-                            let dst_ip_cstr: &CStr = unsafe { CStr::from_ptr(dst_ip_ptr) };
-                            let dst_ip_bytes: &[u8] = dst_ip_cstr.to_bytes();
-                            packet.dest_ip_len = std::cmp::min(dst_ip_bytes.len(), 16);
-                            packet.dest_ip[..packet.dest_ip_len]
-                                .copy_from_slice(&dst_ip_bytes[..packet.dest_ip_len]);
-
-                            packet.data = data_ptr;
+                            // Zero-copy: сохраняем указатели вместо копирования
+                            packet.source_ip_ptr = src_ip_ptr;
+                            packet.source_ip_len = src_ip_len as usize;
+                            packet.dest_ip_ptr = dst_ip_ptr;
+                            packet.dest_ip_len = dst_ip_len as usize;
+                            packet.data_ptr = data_ptr;
                             packet.data_len = data_len as usize;
+
+                            // Сохраняем указатель на mbuf для последующего освобождения
+                            packet.mbuf_ptr = pkt;
 
                             queue_handler(queue_id, &packet);
 
+                            // Освобождаем пакет после обработки
+                            unsafe { rte_pktmbuf_free(packet.mbuf_ptr) };
                             packet_pool_clone.release(packet);
+                        } else {
+                            // Освобождаем пакет если его не удалось обработать
+                            unsafe { rte_pktmbuf_free(pkt) };
                         }
-
-                        unsafe { rte_pktmbuf_free(pkt) };
                     }
                 }
             });
