@@ -194,11 +194,19 @@ struct rte_mbuf* dpdk_create_packet(
     inet_pton(AF_INET, src_ip, &ip_hdr->src_addr);
     inet_pton(AF_INET, dst_ip, &ip_hdr->dst_addr);
     
-    // Заполнение контрольной суммы IP-заголовка
-    ip_hdr->hdr_checksum = 0; // Сначала обнуляем
-    // В реальном приложении здесь нужно вычислить контрольную сумму
-    
-    // Заполнение TCP или UDP заголовка
+    // Копируем данные в пакет
+    if (data != NULL && data_len > 0) {
+        memcpy(pkt_data, data, data_len);
+    }
+
+    // Установка флагов для аппаратного вычисления контрольных сумм
+    mbuf->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM;  // Аппаратное вычисление IP контрольной суммы
+    mbuf->l2_len = sizeof(struct rte_ether_hdr);  // Размер Ethernet заголовка
+    mbuf->l3_len = sizeof(struct rte_ipv4_hdr);   // Размер IP заголовка
+
+    // Для IP оставляем контрольную сумму равной 0
+    ip_hdr->hdr_checksum = 0;
+
     if (use_tcp) {
         struct rte_tcp_hdr *tcp_hdr = (struct rte_tcp_hdr *)l4_hdr;
         memset(tcp_hdr, 0, sizeof(struct rte_tcp_hdr));
@@ -207,6 +215,11 @@ struct rte_mbuf* dpdk_create_packet(
         tcp_hdr->dst_port = rte_cpu_to_be_16(dst_port);
         tcp_hdr->data_off = 0x50; // 5 * 4 = 20 байт (стандартный заголовок TCP)
         tcp_hdr->rx_win = rte_cpu_to_be_16(8192); // Размер окна
+        
+        // Аппаратное вычисление TCP контрольной суммы
+        mbuf->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
+        // Вычисляем только псевдо-заголовок
+        tcp_hdr->cksum = rte_ipv4_phdr_cksum(ip_hdr, mbuf->ol_flags);
     } else {
         // UDP заголовок
         struct rte_udp_hdr *udp_hdr = (struct rte_udp_hdr *)l4_hdr;
@@ -215,49 +228,12 @@ struct rte_mbuf* dpdk_create_packet(
         udp_hdr->src_port = rte_cpu_to_be_16(src_port);
         udp_hdr->dst_port = rte_cpu_to_be_16(dst_port);
         udp_hdr->dgram_len = rte_cpu_to_be_16(l4_hdr_size + data_len);
-        // Контрольная сумма будет вычислена позже или установлена в 0
-        udp_hdr->dgram_cksum = 0;
+        
+        // Аппаратное вычисление UDP контрольной суммы
+        mbuf->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM;
+        // Вычисляем только псевдо-заголовок
+        udp_hdr->dgram_cksum = rte_ipv4_phdr_cksum(ip_hdr, mbuf->ol_flags);
     }
-    
-    // Копируем данные в пакет
-    if (data != NULL && data_len > 0) {
-        memcpy(pkt_data, data, data_len);
-    }
-
-    // Вычисление контрольных сумм программно
-    ip_hdr->hdr_checksum = 0; // Обнуляем перед вычислением
-    ip_hdr->hdr_checksum = rte_ipv4_cksum(ip_hdr);
-    
-    if (use_tcp) {
-        struct rte_tcp_hdr *tcp_hdr = (struct rte_tcp_hdr *)l4_hdr;
-        tcp_hdr->cksum = 0; // Обнуляем перед вычислением
-        tcp_hdr->cksum = rte_ipv4_udptcp_cksum(ip_hdr, tcp_hdr);
-    } else {
-        struct rte_udp_hdr *udp_hdr = (struct rte_udp_hdr *)l4_hdr;
-        udp_hdr->dgram_cksum = 0; // Обнуляем перед вычислением
-        udp_hdr->dgram_cksum = rte_ipv4_udptcp_cksum(ip_hdr, udp_hdr);
-    }
-
-    // TODO! More efficient checksum calculations using NIC
-    // // Установка флагов для аппаратного вычисления
-    // mbuf->ol_flags |= PKT_TX_IP_CKSUM;  // Просим вычислить IP контрольную сумму
-    // mbuf->l2_len = sizeof(struct rte_ether_hdr);  // Размер Ethernet заголовка
-    // mbuf->l3_len = sizeof(struct rte_ipv4_hdr);   // Размер IP заголовка
-
-    // // Для IP оставляем контрольную сумму равной 0
-    // ip_hdr->hdr_checksum = 0;
-
-    // if (use_tcp) {
-    //     // Просим вычислить TCP контрольную сумму
-    //     mbuf->ol_flags |= PKT_TX_TCP_CKSUM;
-    //     // Вычисляем только псевдо-заголовок
-    //     tcp_hdr->cksum = rte_ipv4_phdr_cksum(ip_hdr, mbuf->ol_flags);
-    // } else {
-    //     // Просим вычислить UDP контрольную сумму
-    //     mbuf->ol_flags |= PKT_TX_UDP_CKSUM;
-    //     // Вычисляем только псевдо-заголовок
-    //     udp_hdr->dgram_cksum = rte_ipv4_phdr_cksum(ip_hdr, mbuf->ol_flags);
-    // }
     
     return mbuf;
 }
