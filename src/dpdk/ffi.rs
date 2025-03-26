@@ -53,6 +53,11 @@ pub struct DpdkConfig {
     pub rss_hf: u64,
     pub use_cpu_affinity: bool,
     pub rss_key: Option<Vec<u8>>,
+    pub use_huge_pages: bool,
+    pub socket_mem: Option<Vec<u32>>,
+    pub huge_dir: Option<String>,
+    pub data_room_size: c_ushort,
+    pub use_numa_on_socket: bool,
 }
 
 #[repr(C)]
@@ -166,6 +171,7 @@ extern "C" {
     fn rte_pktmbuf_free(m: *mut RteMbuf);
     fn rte_pktmbuf_mtod(m: *const RteMbuf, t: *const c_void) -> *mut c_void;
     fn rte_pktmbuf_data_len(m: *const RteMbuf) -> c_ushort;
+    fn rte_eth_dev_socket_id(port_id: c_ushort) -> c_int;
 
     fn dpdk_extract_packet_data(
         pkt: *const RteMbuf,
@@ -206,7 +212,33 @@ impl DpdkWrapper {
             return Ok(());
         }
 
-        let c_args: Vec<CString> = args
+        let mut eal_args = Vec::new();
+
+        eal_args.extend_from_slice(args);
+
+        if self.config.use_huge_pages {
+            eal_args.push("--in-memory".to_string());
+
+            if let Some(socket_mem) = &self.config.socket_mem {
+                let socket_mem_arg = format!(
+                    "--socket-mem={}",
+                    socket_mem
+                        .iter()
+                        .map(|m| m.to_string())
+                        .collect::<Vec<String>>()
+                        .join(",")
+                );
+                eal_args.push(socket_mem_arg);
+            }
+
+            if let Some(huge_dir) = &self.config.huge_dir {
+                eal_args.push(format!("--huge-dir={}", huge_dir));
+            }
+
+            eal_args.push("--huge-unlink".to_string());
+        }
+
+        let c_args: Vec<CString> = eal_args
             .iter()
             .map(|arg| CString::new(arg.as_str()).unwrap())
             .collect();
@@ -222,6 +254,19 @@ impl DpdkWrapper {
             return Err(DpdkError::InitError);
         }
 
+        let socket_id = if self.config.use_numa_on_socket {
+            unsafe {
+                let port_socket = rte_eth_dev_socket_id(self.config.port_id);
+                if port_socket >= 0 {
+                    port_socket
+                } else {
+                    -1
+                }
+            }
+        } else {
+            -1
+        };
+
         let pool_name: CString = CString::new("mbuf_pool").unwrap();
         self.mbuf_pool = unsafe {
             rte_pktmbuf_pool_create(
@@ -229,8 +274,8 @@ impl DpdkWrapper {
                 self.config.num_mbufs,
                 self.config.mbuf_cache_size,
                 0,
-                0,
-                -1,
+                self.config.data_room_size,
+                socket_id,
             )
         };
 
@@ -515,5 +560,10 @@ pub fn default_dpdk_config() -> DpdkConfig {
         rss_hf: ETH_RSS_NONFRAG_IPV4_TCP | ETH_RSS_NONFRAG_IPV4_UDP | ETH_RSS_L4_DST_ONLY,
         use_cpu_affinity: true,
         rss_key: None,
+        use_huge_pages: true,
+        socket_mem: Some(vec![1024, 1024]),
+        huge_dir: None,
+        data_room_size: 2048,
+        use_numa_on_socket: true,
     }
 }

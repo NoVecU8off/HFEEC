@@ -4,5 +4,5 @@ mod exchange;
 mod protocol;
 
 fn main() {
-    println!("Hello, world!");
+    println!("HFEEC, I choose you!");
 }
