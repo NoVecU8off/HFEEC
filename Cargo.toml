@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 core_affinity = "0.8.3"
 crossbeam = "0.8.4"
+num_cpus = "1.16.0"
 
 [build-dependencies]
-cc = "1.2.16"
+cc = "1.2.17"
