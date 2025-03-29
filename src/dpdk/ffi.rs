@@ -456,7 +456,6 @@ impl DpdkWrapper {
                             packet.dest_port = dst_port;
                             packet.queue_id = queue_id;
 
-                            // Zero-copy: сохраняем указатели вместо копирования
                             packet.source_ip_ptr = src_ip_ptr;
                             packet.source_ip_len = src_ip_len as usize;
                             packet.dest_ip_ptr = dst_ip_ptr;
@@ -464,16 +463,13 @@ impl DpdkWrapper {
                             packet.data_ptr = data_ptr;
                             packet.data_len = data_len as usize;
 
-                            // Сохраняем указатель на mbuf для последующего освобождения
                             packet.mbuf_ptr = pkt;
 
                             queue_handler(queue_id, &packet);
 
-                            // Освобождаем пакет после обработки
                             unsafe { rte_pktmbuf_free(packet.mbuf_ptr) };
                             packet_pool_clone.release(packet);
                         } else {
-                            // Освобождаем пакет если его не удалось обработать
                             unsafe { rte_pktmbuf_free(pkt) };
                         }
                     }

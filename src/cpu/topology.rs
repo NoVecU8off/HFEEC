@@ -1,5 +1,6 @@
-// topology.rs - Модуль для работы с топологией процессора
+// topology.rs - Improved implementation
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
@@ -99,6 +100,14 @@ impl CpuTopology {
         self.physical_cores = physical_cores.len();
         self.sockets = sockets.len();
 
+        for cores in self.sibling_cores.values_mut() {
+            cores.sort();
+        }
+
+        for cores in self.socket_cores.values_mut() {
+            cores.sort();
+        }
+
         Ok(())
     }
 
@@ -131,18 +140,24 @@ impl CpuTopology {
             .collect()
     }
 
-    /// Возвращает список логических ядер для заданного сокета (NUMA-узла)
+    /// Возвращает список CoreId для определенного NUMA-узла, исключая ядро 0 и HT-потоки
     pub fn get_socket_core_ids(&self, socket_id: usize) -> Vec<CoreId> {
+        let physical_cores = self.get_physical_core_ids();
+
         match self.socket_cores.get(&socket_id) {
-            Some(cores) => {
-                // Фильтруем, чтобы взять только первые логические ядра из каждой пары
-                let physical_cores = self.get_physical_core_ids();
-                cores
-                    .iter()
-                    .filter(|&&id| physical_cores.contains(&id) && id != 0)
-                    .map(|&id| CoreId { id })
-                    .collect()
-            }
+            Some(cores) => cores
+                .iter()
+                .filter(|&&id| physical_cores.contains(&id) && id != 0)
+                .map(|&id| CoreId { id })
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Возвращает все логические ядра для указанного NUMA-узла
+    pub fn get_all_socket_cores(&self, socket_id: usize) -> Vec<usize> {
+        match self.socket_cores.get(&socket_id) {
+            Some(cores) => cores.clone(),
             None => Vec::new(),
         }
     }
@@ -168,7 +183,105 @@ impl CpuTopology {
         let core_mask = self.generate_core_mask();
         args.push(format!("--lcores={}", core_mask));
 
+        // Добавляем master-lcore, обычно это ядро 0
+        args.push("--master-lcore=0".to_string());
+
         args
+    }
+
+    /// Возвращает ID сокета (NUMA-узла) для указанного ядра
+    pub fn get_core_socket_id(&self, core_id: usize) -> Option<usize> {
+        self.socket_mapping.get(&core_id).copied()
+    }
+
+    /// Проверяет, является ли указанное ядро первым логическим ядром в своей группе
+    /// (т.е. не является ли оно HT-потоком)
+    pub fn is_primary_logical_core(&self, core_id: usize) -> bool {
+        if let Some(&physical_id) = self.core_mapping.get(&core_id) {
+            if let Some(siblings) = self.sibling_cores.get(&physical_id) {
+                if !siblings.is_empty() {
+                    return siblings[0] == core_id;
+                }
+            }
+        }
+
+        // Если информации нет, предполагаем, что это первичное ядро
+        true
+    }
+
+    /// Возвращает все доступные сокеты (NUMA-узлы)
+    pub fn get_available_sockets(&self) -> Vec<usize> {
+        let mut sockets: Vec<usize> = self.socket_cores.keys().cloned().collect();
+        sockets.sort();
+        sockets
+    }
+
+    /// Печатает информацию о топологии процессора для отладки
+    pub fn print_topology_info(&self) {
+        println!("CPU Topology Information:");
+        println!("  Total logical cores: {}", self.total_cores);
+        println!("  Physical cores: {}", self.physical_cores);
+        println!("  Sockets (NUMA nodes): {}", self.sockets);
+
+        println!("\nSocket mapping:");
+        for socket_id in self.get_available_sockets() {
+            let cores = self.get_all_socket_cores(socket_id);
+            println!("  Socket {}: {:?}", socket_id, cores);
+
+            // Показываем информацию о первичных логических ядрах для этого сокета
+            let primary_cores: Vec<usize> = cores
+                .iter()
+                .filter(|&&id| self.is_primary_logical_core(id))
+                .cloned()
+                .collect();
+
+            println!("    Primary logical cores: {:?}", primary_cores);
+        }
+
+        println!("\nPhysical to logical core mapping:");
+        for (phys_id, logical_ids) in &self.sibling_cores {
+            println!(
+                "  Physical core {}: logical cores {:?}",
+                phys_id, logical_ids
+            );
+        }
+
+        println!(
+            "\nFiltered core IDs (excluding HT and core 0): {:?}",
+            self.get_filtered_core_ids()
+                .iter()
+                .map(|c| c.id)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+impl fmt::Display for CpuTopology {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "CPU Topology:")?;
+        writeln!(f, "  Total cores: {}", self.total_cores)?;
+        writeln!(f, "  Physical cores: {}", self.physical_cores)?;
+        writeln!(f, "  Sockets: {}", self.sockets)?;
+
+        writeln!(
+            f,
+            "  Filtered cores: {:?}",
+            self.get_filtered_core_ids()
+                .iter()
+                .map(|c| c.id)
+                .collect::<Vec<_>>()
+        )?;
+
+        for socket_id in self.get_available_sockets() {
+            writeln!(
+                f,
+                "  Socket {}: {} cores",
+                socket_id,
+                self.get_socket_core_ids(socket_id).len()
+            )?;
+        }
+
+        Ok(())
     }
 }
 
@@ -212,6 +325,18 @@ pub fn is_topology_info_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_topology() {
+        let topology = match CpuTopology::new() {
+            Ok(t) => t,
+            Err(e) => {
+                println!("{e}");
+                return;
+            }
+        };
+        topology.print_topology_info();
+    }
 
     #[test]
     fn test_info_available() {
