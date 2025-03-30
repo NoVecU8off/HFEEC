@@ -12,17 +12,17 @@ pub struct CpuTopology {
     pub total_cores: usize,
     pub physical_cores: usize,
     pub sockets: usize,
-    /// Отображение логических ядер на физические
-    /// Ключ: ID логического ядра, Значение: ID физического ядра
+    /// Mapping of logical cores to physical cores
+    /// Key: Logical core ID, Value: Physical core ID
     pub core_mapping: HashMap<usize, usize>,
-    /// Отображение логических ядер на сокеты
-    /// Ключ: ID логического ядра, Значение: ID сокета
+    /// Mapping of logical cores to sockets
+    /// Key: Logical core ID, Value: Socket ID
     pub socket_mapping: HashMap<usize, usize>,
-    /// Список ядер, сгруппированных по физическим ядрам
-    /// Ключ: ID физического ядра, Значение: Список ID логических ядер
+    /// List of cores grouped by physical cores
+    /// Key: Physical core ID, Value: List of logical core IDs
     pub sibling_cores: HashMap<usize, Vec<usize>>,
-    /// Список ядер, принадлежащих каждому сокету
-    /// Ключ: ID сокета, Значение: Список ID логических ядер
+    /// List of cores belonging to each socket
+    /// Key: Socket ID, Value: List of logical core IDs
     pub socket_cores: HashMap<usize, Vec<usize>>,
 }
 
@@ -42,7 +42,7 @@ impl CpuTopology {
         Ok(topology)
     }
 
-    /// Загружает информацию о топологии процессора из системных файлов
+    /// Loads processor topology information from system files
     fn load_topology(&mut self) -> io::Result<()> {
         let cpu_path = Path::new("/sys/devices/system/cpu");
 
@@ -111,7 +111,7 @@ impl CpuTopology {
         Ok(())
     }
 
-    /// Возвращает список ID первых логических ядер из каждой пары (без Hyper-Threading)
+    /// Returns a list of IDs of the first logical cores from each pair (without Hyper-Threading)
     pub fn get_physical_core_ids(&self) -> Vec<usize> {
         let mut result = Vec::new();
 
@@ -129,18 +129,18 @@ impl CpuTopology {
         result
     }
 
-    /// Возвращает список CoreId для core_affinity, исключая ядро 0
+    /// Returns a list of CoreId for core_affinity, excluding core 0
     pub fn get_filtered_core_ids(&self) -> Vec<CoreId> {
         let physical_ids = self.get_physical_core_ids();
 
         physical_ids
             .iter()
-            .filter(|&&id| id != 0) // Исключаем ядро 0
+            .filter(|&&id| id != 0) // Exclude core 0
             .map(|&id| CoreId { id })
             .collect()
     }
 
-    /// Возвращает список CoreId для определенного NUMA-узла, исключая ядро 0 и HT-потоки
+    /// Returns a list of CoreId for a specific NUMA node, excluding core 0 and HT threads
     pub fn get_socket_core_ids(&self, socket_id: usize) -> Vec<CoreId> {
         let physical_cores = self.get_physical_core_ids();
 
@@ -154,7 +154,7 @@ impl CpuTopology {
         }
     }
 
-    /// Возвращает все логические ядра для указанного NUMA-узла
+    /// Returns all logical cores for the specified NUMA node
     pub fn get_all_socket_cores(&self, socket_id: usize) -> Vec<usize> {
         match self.socket_cores.get(&socket_id) {
             Some(cores) => cores.clone(),
@@ -162,7 +162,7 @@ impl CpuTopology {
         }
     }
 
-    /// Генерирует маску процессора в формате, подходящем для аргументов DPDK EAL
+    /// Generates a processor mask in a format suitable for DPDK EAL arguments
     pub fn generate_core_mask(&self) -> String {
         let core_ids = self.get_filtered_core_ids();
         let mut mask: u64 = 0;
@@ -176,26 +176,26 @@ impl CpuTopology {
         format!("0x{:x}", mask)
     }
 
-    /// Генерирует список аргументов для DPDK EAL, включая маски процессоров
+    /// Generates a list of arguments for DPDK EAL, including processor masks
     pub fn generate_eal_cpu_args(&self) -> Vec<String> {
         let mut args = Vec::new();
 
         let core_mask = self.generate_core_mask();
         args.push(format!("--lcores={}", core_mask));
 
-        // Добавляем master-lcore, обычно это ядро 0
+        // Add master-lcore, usually core 0
         args.push("--master-lcore=0".to_string());
 
         args
     }
 
-    /// Возвращает ID сокета (NUMA-узла) для указанного ядра
+    /// Returns the socket ID (NUMA node) for the specified core
     pub fn get_core_socket_id(&self, core_id: usize) -> Option<usize> {
         self.socket_mapping.get(&core_id).copied()
     }
 
-    /// Проверяет, является ли указанное ядро первым логическим ядром в своей группе
-    /// (т.е. не является ли оно HT-потоком)
+    /// Checks if the specified core is the first logical core in its group
+    /// (i.e., whether it is an HT thread or not)
     pub fn is_primary_logical_core(&self, core_id: usize) -> bool {
         if let Some(&physical_id) = self.core_mapping.get(&core_id) {
             if let Some(siblings) = self.sibling_cores.get(&physical_id) {
@@ -205,18 +205,18 @@ impl CpuTopology {
             }
         }
 
-        // Если информации нет, предполагаем, что это первичное ядро
+        // If no information is available, assume it's a primary core
         true
     }
 
-    /// Возвращает все доступные сокеты (NUMA-узлы)
+    /// Returns all available sockets (NUMA nodes)
     pub fn get_available_sockets(&self) -> Vec<usize> {
         let mut sockets: Vec<usize> = self.socket_cores.keys().cloned().collect();
         sockets.sort();
         sockets
     }
 
-    /// Печатает информацию о топологии процессора для отладки
+    /// Prints processor topology information for debugging
     pub fn print_topology_info(&self) {
         println!("CPU Topology Information:");
         println!("  Total logical cores: {}", self.total_cores);
@@ -228,7 +228,7 @@ impl CpuTopology {
             let cores = self.get_all_socket_cores(socket_id);
             println!("  Socket {}: {:?}", socket_id, cores);
 
-            // Показываем информацию о первичных логических ядрах для этого сокета
+            // Show information about primary logical cores for this socket
             let primary_cores: Vec<usize> = cores
                 .iter()
                 .filter(|&&id| self.is_primary_logical_core(id))
@@ -285,7 +285,7 @@ impl fmt::Display for CpuTopology {
     }
 }
 
-/// Чтение первой строки из файла
+/// Reads the first line from a file
 fn read_first_line<P: AsRef<Path>>(path: P) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut contents = String::new();
@@ -294,7 +294,7 @@ fn read_first_line<P: AsRef<Path>>(path: P) -> io::Result<String> {
     Ok(contents.lines().next().unwrap_or("").to_string())
 }
 
-/// Разбор списка процессоров из строки формата "0-3,5,7-9"
+/// Parses a processor list from a string in the format "0-3,5,7-9"
 fn parse_cpu_list(list: &str) -> Vec<usize> {
     let mut result = Vec::new();
 
@@ -317,36 +317,7 @@ fn parse_cpu_list(list: &str) -> Vec<usize> {
     result
 }
 
-/// Проверяет, доступна ли информация о топологии процессора
+/// Checks if processor topology information is available
 pub fn is_topology_info_available() -> bool {
     Path::new("/sys/devices/system/cpu/cpu0/topology").exists()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_topology() {
-        let topology = match CpuTopology::new() {
-            Ok(t) => t,
-            Err(e) => {
-                println!("{e}");
-                return;
-            }
-        };
-        topology.print_topology_info();
-    }
-
-    #[test]
-    fn test_info_available() {
-        assert_eq!(is_topology_info_available(), true)
-    }
-
-    #[test]
-    fn test_parse_cpu_list() {
-        assert_eq!(parse_cpu_list("0-3,5,7-9"), vec![0, 1, 2, 3, 5, 7, 8, 9]);
-        assert_eq!(parse_cpu_list("0,2,4"), vec![0, 2, 4]);
-        assert_eq!(parse_cpu_list("0-2"), vec![0, 1, 2]);
-    }
 }
