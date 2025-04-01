@@ -142,13 +142,11 @@ impl NumaTopology {
 
             // Get network interface name if available
             if let Ok(netdev_dirs) = fs::read_dir(path.join("net")) {
-                for netdev_entry in netdev_dirs {
-                    if let Ok(netdev_entry) = netdev_entry {
-                        let ifname = netdev_entry.file_name().to_string_lossy().to_string();
-                        // Check if we know the NUMA node for this device
-                        if let Some(&node_id) = self.device_node.get(&device_id) {
-                            self.nic_node.insert(ifname, node_id);
-                        }
+                for netdev_entry in netdev_dirs.flatten() {
+                    let ifname = netdev_entry.file_name().to_string_lossy().to_string();
+                    // Check if we know the NUMA node for this device
+                    if let Some(&node_id) = self.device_node.get(&device_id) {
+                        self.nic_node.insert(ifname, node_id);
                     }
                 }
             }

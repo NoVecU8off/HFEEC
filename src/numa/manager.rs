@@ -79,13 +79,7 @@ impl NumaManager {
         // Распределяем порты по узлам NUMA
         for port in ports {
             // Определяем узел NUMA для этого порта
-            let node_id = if let Some(port_node) = port.numa_node {
-                // Если порт прикреплен к конкретному узлу NUMA
-                port_node
-            } else {
-                // Если неизвестно, к какому узлу прикреплен порт, используем узел 0
-                0
-            };
+            let node_id = port.numa_node.unwrap_or_default();
 
             // Регистрируем порт на соответствующем узле
             if let Some(node) = self.nodes.get_mut(&node_id) {
