@@ -200,7 +200,3 @@ pub fn default_dpdk_config() -> DpdkConfig {
         use_numa_on_socket: true,
     }
 }
-
-// Примечание: Реализация DpdkWrapper перенесена в более продвинутый DpdkApp
-// в файле engine, который использует NUMA и CPU топологию для
-// оптимизации производительности.
