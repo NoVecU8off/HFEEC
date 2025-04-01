@@ -30,28 +30,6 @@ pub const ETH_RSS_L4_DST_ONLY: u64 = 0x200;
 pub const ETH_RSS_L4_SRC_ONLY: u64 = 0x100;
 
 #[repr(C)]
-pub struct DpdkConfig {
-    pub port_id: c_ushort,
-    pub num_rx_queues: c_ushort,
-    pub num_tx_queues: c_ushort,
-    pub promiscuous: bool,
-    pub rx_ring_size: c_uint,
-    pub tx_ring_size: c_uint,
-    pub num_mbufs: c_uint,
-    pub mbuf_cache_size: c_uint,
-    pub burst_size: c_uint,
-    pub enable_rss: bool,
-    pub rss_hf: u64,
-    pub use_cpu_affinity: bool,
-    pub rss_key: Option<Vec<u8>>,
-    pub use_huge_pages: bool,
-    pub socket_mem: Option<Vec<u32>>,
-    pub huge_dir: Option<String>,
-    pub data_room_size: c_ushort,
-    pub use_numa_on_socket: bool,
-}
-
-#[repr(C)]
 pub struct RteEthConf {
     pub rxmode: RteEthRxMode,
     pub txmode: RteEthTxMode,
@@ -175,28 +153,4 @@ extern "C" {
         data_out: *mut *mut u8,
         data_len_out: *mut u32,
     ) -> c_int;
-}
-
-/// Создает конфигурацию DPDK с параметрами по умолчанию
-pub fn default_dpdk_config() -> DpdkConfig {
-    DpdkConfig {
-        port_id: 0,
-        num_rx_queues: 4,
-        num_tx_queues: 4,
-        promiscuous: true,
-        rx_ring_size: 1024,
-        tx_ring_size: 1024,
-        num_mbufs: 8191,
-        mbuf_cache_size: 250,
-        burst_size: 32,
-        enable_rss: true,
-        rss_hf: ETH_RSS_NONFRAG_IPV4_TCP | ETH_RSS_NONFRAG_IPV4_UDP | ETH_RSS_L4_DST_ONLY,
-        use_cpu_affinity: true,
-        rss_key: None,
-        use_huge_pages: true,
-        socket_mem: Some(vec![1024, 1024]),
-        huge_dir: None,
-        data_room_size: 2048,
-        use_numa_on_socket: true,
-    }
 }

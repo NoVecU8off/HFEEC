@@ -43,7 +43,7 @@ impl CpuTopology {
 
     /// Loads processor topology information from system files
     fn load_topology(&mut self) -> io::Result<()> {
-        let cpu_path = Path::new("/sys/devices/system/system");
+        let cpu_path = Path::new("/sys/devices/system/cpu");
 
         let mut physical_cores = HashSet::new();
         let mut sockets = HashSet::new();
@@ -307,9 +307,4 @@ fn parse_cpu_list(list: &str) -> Vec<usize> {
     }
 
     result
-}
-
-/// Checks if processor topology information is available
-pub fn is_topology_info_available() -> bool {
-    Path::new("/sys/devices/system/system/cpu0/topology").exists()
 }
