@@ -62,18 +62,18 @@ impl CpuTopology {
 
             let topology_path = path.join("topology");
 
-            if let Ok(core_id) = read_first_line(&topology_path.join("core_id")) {
+            if let Ok(core_id) = read_first_line(topology_path.join("core_id")) {
                 let core_id: usize = core_id.trim().parse().unwrap_or(0);
                 self.core_mapping.insert(cpu_id, core_id);
                 physical_cores.insert(core_id);
 
                 self.sibling_cores
                     .entry(core_id)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(cpu_id);
             }
 
-            if let Ok(socket_id) = read_first_line(&topology_path.join("physical_package_id")) {
+            if let Ok(socket_id) = read_first_line(topology_path.join("physical_package_id")) {
                 let socket_id: usize = socket_id.trim().parse().unwrap_or(0);
                 self.socket_mapping.insert(cpu_id, socket_id);
                 sockets.insert(socket_id);
@@ -82,7 +82,7 @@ impl CpuTopology {
             }
 
             if let Ok(thread_siblings) =
-                read_first_line(&topology_path.join("thread_siblings_list"))
+                read_first_line(topology_path.join("thread_siblings_list"))
             {
                 let core_ids = parse_cpu_list(&thread_siblings);
 

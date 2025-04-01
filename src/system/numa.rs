@@ -120,7 +120,7 @@ impl NumaTopology {
 
             // Check if this is a network device
             let is_network = path.join("class").exists() && {
-                let class = read_first_line(&path.join("class"))?;
+                let class = read_first_line(path.join("class"))?;
                 class.starts_with("0x02") // 0x02 is the network class
             };
 
