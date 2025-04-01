@@ -1,6 +1,5 @@
 use super::ffi::RteMbuf;
 
-// packet.rs
 #[repr(C, align(64))]
 pub struct PacketData {
     pub source_port: u16,

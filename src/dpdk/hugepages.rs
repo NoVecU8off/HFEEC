@@ -1,4 +1,3 @@
-//hugepages.rs
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;

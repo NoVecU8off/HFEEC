@@ -1,4 +1,3 @@
-// src/dpdk/wrapper.rs - NUMA and CPU topology-aware DPDK initialization
 use std::ffi::{c_void, CString};
 use std::os::raw::{c_char, c_int, c_ushort};
 use std::ptr;
@@ -6,9 +5,9 @@ use std::sync::Arc;
 
 use super::ffi::{DpdkConfig, DpdkError, RteEthConf, RteEthRssConf, RteMempool};
 use super::hugepages;
-use crate::cpu::numa::NumaTopology;
-use crate::cpu::topology::CpuTopology;
-use crate::cpu::worker::{PacketHandler, WorkerManager};
+use crate::system::cpu::CpuTopology;
+use crate::system::numa::NumaTopology;
+use crate::system::worker::{PacketHandler, WorkerManager};
 
 /// Enhanced wrapper for DPDK with NUMA and CPU topology awareness
 pub struct DpdkApp {

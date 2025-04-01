@@ -1,4 +1,3 @@
-// src/cpu/worker.rs - Worker thread management with CPU and NUMA affinity
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -8,8 +7,8 @@ use std::thread::{self, JoinHandle};
 
 use core_affinity::CoreId;
 
+use super::cpu::CpuTopology;
 use super::numa::NumaTopology;
-use super::topology::CpuTopology;
 use crate::dpdk::packet::PacketData;
 use crate::dpdk::pool::PacketDataPool;
 

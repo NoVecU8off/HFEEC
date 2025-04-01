@@ -1,3 +1,3 @@
 pub mod numa;
-pub mod topology;
+pub mod cpu;
 pub mod worker;

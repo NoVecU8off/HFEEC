@@ -1,4 +1,3 @@
-// ffi.rs - FFI интерфейс к DPDK C-библиотеке
 use std::ffi::c_void;
 use std::os::raw::{c_char, c_int, c_uint, c_ushort};
 
@@ -203,5 +202,5 @@ pub fn default_dpdk_config() -> DpdkConfig {
 }
 
 // Примечание: Реализация DpdkWrapper перенесена в более продвинутый DpdkApp
-// в файле wrapper.rs, который использует NUMA и CPU топологию для
+// в файле engine, который использует NUMA и CPU топологию для
 // оптимизации производительности.

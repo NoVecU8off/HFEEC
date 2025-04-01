@@ -1,7 +1,7 @@
 #![allow(dead_code)]
-mod cpu;
+mod system;
 mod dpdk;
-mod protocol;
+mod protocols;
 
 fn main() {
     println!("HFEEC, I choose you!");

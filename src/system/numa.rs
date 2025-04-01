@@ -1,4 +1,3 @@
-// src/cpu/numa.rs - NUMA-aware topology management
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
@@ -6,7 +5,7 @@ use std::path::Path;
 
 use core_affinity::CoreId;
 
-use super::topology::CpuTopology;
+use super::cpu::CpuTopology;
 
 #[derive(Debug, Clone)]
 pub struct NumaTopology {

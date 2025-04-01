@@ -1,4 +1,3 @@
-// topology.rs - Improved implementation
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File};
@@ -44,7 +43,7 @@ impl CpuTopology {
 
     /// Loads processor topology information from system files
     fn load_topology(&mut self) -> io::Result<()> {
-        let cpu_path = Path::new("/sys/devices/system/cpu");
+        let cpu_path = Path::new("/sys/devices/system/system");
 
         let mut physical_cores = HashSet::new();
         let mut sockets = HashSet::new();
@@ -54,7 +53,7 @@ impl CpuTopology {
             let path = entry.path();
             let filename = path.file_name().unwrap().to_string_lossy();
 
-            if !filename.starts_with("cpu") || !filename[3..].chars().all(char::is_numeric) {
+            if !filename.starts_with("system") || !filename[3..].chars().all(char::is_numeric) {
                 continue;
             }
 
@@ -79,10 +78,7 @@ impl CpuTopology {
                 self.socket_mapping.insert(cpu_id, socket_id);
                 sockets.insert(socket_id);
 
-                self.socket_cores
-                    .entry(socket_id)
-                    .or_insert_with(Vec::new)
-                    .push(cpu_id);
+                self.socket_cores.entry(socket_id).or_default().push(cpu_id);
             }
 
             if let Ok(thread_siblings) =
@@ -319,5 +315,5 @@ fn parse_cpu_list(list: &str) -> Vec<usize> {
 
 /// Checks if processor topology information is available
 pub fn is_topology_info_available() -> bool {
-    Path::new("/sys/devices/system/cpu/cpu0/topology").exists()
+    Path::new("/sys/devices/system/system/cpu0/topology").exists()
 }
