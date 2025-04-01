@@ -44,9 +44,10 @@ fn main() {
     }
 
     // Проверка, поддерживает ли DPDK опции NUMA
-    let has_numa = check_dpdk_numa_support();
+    let has_numa = check_numa_support();
     if has_numa {
         println!("cargo:rustc-cfg=feature=\"numa\"");
+        println!("cargo:rustc-link-lib=numa");
     }
 
     // Компиляция нативного кода
@@ -88,10 +89,29 @@ fn check_hugepages_available() -> bool {
     Path::new("/sys/kernel/mm/hugepages").exists()
 }
 
-/// Проверяет, поддерживает ли установленная версия DPDK опции NUMA
-fn check_dpdk_numa_support() -> bool {
-    // Проверяем, существует ли библиотека NUMA
-    Path::new("/usr/lib/libnuma.so").exists()
+/// Проверяет, поддерживает ли система NUMA
+fn check_numa_support() -> bool {
+    // Проверяем существование библиотеки libnuma
+    let has_libnuma = Path::new("/usr/lib/libnuma.so").exists()
         || Path::new("/usr/lib64/libnuma.so").exists()
-        || Path::new("/usr/lib/x86_64-linux-gnu/libnuma.so").exists()
+        || Path::new("/usr/lib/x86_64-linux-gnu/libnuma.so").exists();
+
+    if !has_libnuma {
+        println!("libnuma not found, NUMA support disabled");
+        return false;
+    }
+
+    // Если libnuma присутствует, проверяем существование нескольких NUMA-узлов
+    let has_numa_nodes = Path::new("/sys/devices/system/node/node0").exists()
+        && Path::new("/sys/devices/system/node/node1").exists();
+
+    if !has_numa_nodes {
+        println!("System has only one NUMA node or NUMA not available");
+    } else {
+        println!("NUMA support detected with multiple nodes");
+    }
+
+    // Даже если у системы только один узел NUMA, мы все равно подключаем libnuma
+    // для единообразия кода
+    true
 }

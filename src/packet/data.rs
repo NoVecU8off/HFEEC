@@ -1,11 +1,13 @@
-use super::ffi::RteMbuf;
+// src/packet/data.rs
+use crate::dpdk::ffi::RteMbuf;
 
+/// Структура для хранения данных пакета
 #[repr(C, align(64))]
 pub struct PacketData {
     pub source_port: u16,
     pub dest_port: u16,
     pub queue_id: u16,
-    // Указатели вместо буферов
+    // Указатели вместо буферов для zero-copy
     pub source_ip_ptr: *const u8,
     pub source_ip_len: usize,
     pub dest_ip_ptr: *const u8,
@@ -32,14 +34,17 @@ impl PacketData {
         }
     }
 
+    /// Получает исходный IP-адрес в виде среза
     pub fn get_source_ip(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.source_ip_ptr, self.source_ip_len) }
     }
 
+    /// Получает IP-адрес назначения в виде среза
     pub fn get_dest_ip(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.dest_ip_ptr, self.dest_ip_len) }
     }
 
+    /// Получает данные пакета в виде среза
     pub fn get_data(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.data_ptr, self.data_len) }
     }

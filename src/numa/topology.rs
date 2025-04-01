@@ -5,7 +5,7 @@ use std::path::Path;
 
 use core_affinity::CoreId;
 
-use super::cpu::CpuTopology;
+use crate::cpu::topology::CpuTopology;
 
 #[derive(Debug, Clone)]
 pub struct NumaTopology {

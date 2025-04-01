@@ -91,6 +91,7 @@ dependencies = [
  "cc",
  "core_affinity",
  "crossbeam",
+ "libc",
  "num_cpus",
 ]
 

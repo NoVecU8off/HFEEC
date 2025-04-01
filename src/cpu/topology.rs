@@ -67,10 +67,7 @@ impl CpuTopology {
                 self.core_mapping.insert(cpu_id, core_id);
                 physical_cores.insert(core_id);
 
-                self.sibling_cores
-                    .entry(core_id)
-                    .or_default()
-                    .push(cpu_id);
+                self.sibling_cores.entry(core_id).or_default().push(cpu_id);
             }
 
             if let Ok(socket_id) = read_first_line(topology_path.join("physical_package_id")) {
@@ -81,8 +78,7 @@ impl CpuTopology {
                 self.socket_cores.entry(socket_id).or_default().push(cpu_id);
             }
 
-            if let Ok(thread_siblings) =
-                read_first_line(topology_path.join("thread_siblings_list"))
+            if let Ok(thread_siblings) = read_first_line(topology_path.join("thread_siblings_list"))
             {
                 let core_ids = parse_cpu_list(&thread_siblings);
 
