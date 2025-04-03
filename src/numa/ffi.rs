@@ -55,7 +55,6 @@ impl NumaAllocator {
             return Vec::new();
         }
 
-        // Преобразуем битовую маску в список CPU
         let mut cpus = Vec::new();
         for i in 0..num_possible_cpus {
             let word_index = i / (8 * size_of::<c_ulong>());

@@ -21,7 +21,6 @@ pub struct DpdkConfig {
     pub huge_dir: Option<String>,
     pub data_room_size: c_ushort,
     pub use_numa_on_socket: bool,
-    // Новые поля для поддержки требований
     pub enable_jumbo_frames: bool,
     pub max_rx_pkt_len: u32,
     pub enable_hw_checksum: bool,

@@ -25,22 +25,17 @@ pub fn init_dpdk_for_node(
         return Err("Huge pages not available but required by config".to_string());
     }
 
-    // Генерируем аргументы EAL для этого узла
     let mut eal_args = vec![
         "hfeec".to_string(), // Имя программы
     ];
 
-    // Добавляем маску ядер только для этого узла
     let core_mask = node.generate_core_mask();
     eal_args.push(format!("--lcores={}", core_mask));
 
-    // Добавляем маску master lcore (используем обычно ядро 0)
     eal_args.push("--master-lcore=0".to_string());
 
-    // Добавляем специфичные для NUMA аргументы
     eal_args.extend(node.generate_eal_args(dpdk_config));
 
-    // Добавляем дополнительные аргументы
     eal_args.extend_from_slice(additional_args);
 
     println!(
@@ -51,7 +46,6 @@ pub fn init_dpdk_for_node(
         println!("  {}", arg);
     }
 
-    // Конвертируем аргументы в C-строки
     let c_args: Vec<CString> = eal_args
         .iter()
         .map(|arg| CString::new(arg.as_str()).unwrap())
@@ -62,7 +56,6 @@ pub fn init_dpdk_for_node(
         .map(|arg| arg.as_ptr() as *mut c_char)
         .collect();
 
-    // Инициализируем EAL
     let ret = unsafe { ffi::rte_eal_init(c_args.len() as c_int, c_argv.as_mut_ptr()) };
     if ret < 0 {
         return Err(format!("Failed to initialize DPDK EAL: error code {}", ret));
@@ -77,13 +70,11 @@ pub fn configure_port_for_node(
     port_id: u16,
     dpdk_config: &DpdkConfig,
 ) -> Result<(), String> {
-    // Проверяем, что порт валиден
     let is_valid = unsafe { ffi::rte_eth_dev_is_valid_port(port_id) };
     if is_valid == 0 {
         return Err(format!("Invalid port id: {}", port_id));
     }
 
-    // Получаем NUMA-узел порта
     let port_socket_id = unsafe {
         let socket_id = ffi::rte_eth_dev_socket_id(port_id);
         if socket_id >= 0 {
@@ -93,7 +84,6 @@ pub fn configure_port_for_node(
         }
     };
 
-    // Проверяем, соответствует ли узел NUMA нашему
     if port_socket_id >= 0
         && port_socket_id as usize != node.node_id
         && dpdk_config.use_numa_on_socket
@@ -106,16 +96,13 @@ pub fn configure_port_for_node(
 
     println!("Configuring port {} on socket {}", port_id, port_socket_id);
 
-    // Создаем mbuf pool для этого порта
     let mbuf_pool = create_mbuf_pool_for_port(port_id, dpdk_config)?;
     if mbuf_pool.is_null() {
         return Err("Failed to create mbuf pool".to_string());
     }
 
-    // Создаем конфигурацию Ethernet
     let mut eth_conf = default_eth_config();
 
-    // Настраиваем RSS, если нужно
     let enable_rss = dpdk_config.enable_rss && dpdk_config.num_rx_queues > 1;
     if enable_rss {
         eth_conf.rxmode.mq_mode = ffi::ETH_MQ_RX_RSS;
@@ -127,12 +114,10 @@ pub fn configure_port_for_node(
         }
     }
 
-    // Настраиваем Jumbo Frames, если нужно
     if dpdk_config.enable_jumbo_frames {
         eth_conf.rxmode.max_rx_pkt_len = dpdk_config.max_rx_pkt_len;
     }
 
-    // Конфигурируем порт
     let ret = unsafe {
         ffi::rte_eth_dev_configure(
             port_id,
@@ -149,9 +134,7 @@ pub fn configure_port_for_node(
         ));
     }
 
-    // Настраиваем RX очереди
     for q in 0..dpdk_config.num_rx_queues {
-        // Используем NUMA-узел для очереди
         let queue_socket_id = match dpdk_config.use_numa_on_socket {
             true => port_socket_id,
             false => -1,
@@ -176,7 +159,6 @@ pub fn configure_port_for_node(
         }
     }
 
-    // Настраиваем TX очереди
     for q in 0..dpdk_config.num_tx_queues {
         let queue_socket_id = match dpdk_config.use_numa_on_socket {
             true => port_socket_id,
@@ -201,7 +183,6 @@ pub fn configure_port_for_node(
         }
     }
 
-    // Запускаем порт
     let ret = unsafe { ffi::rte_eth_dev_start(port_id) };
     if ret < 0 {
         return Err(format!(
@@ -210,7 +191,6 @@ pub fn configure_port_for_node(
         ));
     }
 
-    // Включаем promiscuous режим, если нужно
     if dpdk_config.promiscuous {
         let ret = unsafe { ffi::rte_eth_promiscuous_enable(port_id) };
         if ret < 0 {
@@ -229,7 +209,6 @@ fn create_mbuf_pool_for_port(
     port_id: u16,
     dpdk_config: &DpdkConfig,
 ) -> Result<*mut ffi::RteMempool, String> {
-    // Получаем NUMA-узел порта
     let port_numa_node = unsafe {
         let node = ffi::rte_eth_dev_socket_id(port_id);
         if node >= 0 {
@@ -251,7 +230,6 @@ fn create_mbuf_pool_for_port(
 
     let socket_id = port_numa_node.map_or(-1, |id| id as c_int);
 
-    // Создаем memory pool
     let mbuf_pool = unsafe {
         ffi::rte_pktmbuf_pool_create(
             pool_name.as_ptr(),
@@ -302,12 +280,11 @@ fn default_eth_config() -> ffi::RteEthConf {
 /// Перечисляет доступные порты DPDK и возвращает информацию о них
 pub fn enumerate_dpdk_ports() -> Vec<DpdkPortInfo> {
     let mut ports = Vec::new();
-    let max_ports = 32; // Максимальное количество портов для поиска
+    let max_ports = 32;
 
     for port_id in 0..max_ports {
         let is_valid = unsafe { ffi::rte_eth_dev_is_valid_port(port_id as u16) };
         if is_valid != 0 {
-            // Получаем информацию о порте
             let numa_node = unsafe {
                 let socket_id = ffi::rte_eth_dev_socket_id(port_id as u16);
                 if socket_id >= 0 {

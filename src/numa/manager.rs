@@ -23,14 +23,12 @@ pub struct NumaManager {
 impl NumaManager {
     /// Создает новый менеджер NUMA
     pub fn new() -> Result<Self, String> {
-        // Загружаем информацию о топологии
         let cpu_topology =
             CpuTopology::new().map_err(|e| format!("Failed to load CPU topology: {}", e))?;
 
         let numa_topology =
             NumaTopology::new().map_err(|e| format!("Failed to load NUMA topology: {}", e))?;
 
-        // Проверяем, доступна ли NUMA
         let numa_available = NumaAllocator::is_available();
 
         println!("NUMA support available: {}", numa_available);
@@ -45,22 +43,19 @@ impl NumaManager {
 
     /// Инициализирует необходимое количество NUMA-узлов
     pub fn init_nodes(&mut self) -> Result<(), String> {
-        // Определяем количество узлов NUMA
         let node_count = if self.numa_available {
             NumaAllocator::get_node_count()
         } else {
-            1 // Если NUMA недоступна, создаем один "виртуальный" узел
+            1
         };
 
         println!("Initializing {} NUMA nodes", node_count);
 
-        // Создаем узлы
         for node_id in 0..node_count {
             let node = NumaNode::new(node_id, &self.cpu_topology, &self.numa_topology);
             self.nodes.insert(node_id, node);
         }
 
-        // Выводим информацию о созданных узлах
         self.print_numa_topology();
 
         Ok(())
@@ -68,7 +63,6 @@ impl NumaManager {
 
     /// Распределяет сетевые интерфейсы по NUMA-узлам
     pub fn distribute_interfaces(&mut self, dpdk_config: &DpdkConfig) -> Result<(), String> {
-        // Перечисляем доступные порты DPDK
         let ports = enumerate_dpdk_ports();
         if ports.is_empty() {
             return Err("No DPDK ports found".to_string());
@@ -76,12 +70,9 @@ impl NumaManager {
 
         println!("Found {} DPDK ports", ports.len());
 
-        // Распределяем порты по узлам NUMA
         for port in ports {
-            // Определяем узел NUMA для этого порта
             let node_id = port.numa_node.unwrap_or_default();
 
-            // Регистрируем порт на соответствующем узле
             if let Some(node) = self.nodes.get_mut(&node_id) {
                 node.register_port(
                     port.port_id,
@@ -100,27 +91,21 @@ impl NumaManager {
 
     /// Инициализирует DPDK для всех NUMA-узлов
     pub fn init_dpdk(&mut self, dpdk_config: &DpdkConfig) -> Result<(), String> {
-        // Для каждого узла NUMA
         for (node_id, node) in &mut self.nodes {
-            // Инициализируем DPDK для этого узла
             let mut node_args = vec![];
 
             if self.numa_available {
-                // Добавляем аргументы для NUMA
                 node_args.push(format!("--socket-id={}", node_id));
             }
 
             println!("Initializing DPDK for NUMA node {}", node_id);
 
-            // Инициализируем EAL
             init_dpdk_for_node(node, dpdk_config, &node_args)?;
 
-            // Конфигурируем порты для этого узла
             for port in &node.local_ports {
                 configure_port_for_node(node, port.port_id, dpdk_config)?;
             }
 
-            // Инициализируем пул пакетов для узла с учетом NUMA
             let pool_capacity = (dpdk_config.burst_size * 4) as usize;
             node.init_packet_pool(pool_capacity)?;
         }
@@ -136,11 +121,9 @@ impl NumaManager {
     ) -> Result<(), String> {
         println!("Starting packet processing on all NUMA nodes");
 
-        // Для каждого узла NUMA
         for (node_id, node) in &mut self.nodes {
             println!("Starting workers on NUMA node {}", node_id);
 
-            // Запускаем обработку пакетов
             node.start_workers(packet_handler.clone(), dpdk_config.burst_size)?;
         }
 
@@ -151,7 +134,6 @@ impl NumaManager {
     pub fn stop_packet_processing(&mut self) {
         println!("Stopping packet processing on all NUMA nodes");
 
-        // Для каждого узла NUMA
         for (node_id, node) in &mut self.nodes {
             println!("Stopping workers on NUMA node {}", node_id);
             node.stop_workers();
@@ -164,13 +146,10 @@ impl NumaManager {
         println!("NUMA available: {}", self.numa_available);
         println!("NUMA nodes: {}", self.nodes.len());
 
-        // Информация о CPU
         self.cpu_topology.print_topology_info();
 
-        // Информация о NUMA
         self.numa_topology.print_topology_info(&self.cpu_topology);
 
-        // Информация о созданных узлах
         for (node_id, node) in &self.nodes {
             println!("\nNUMA Node {}:", node_id);
             println!(

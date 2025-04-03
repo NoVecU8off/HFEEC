@@ -7,14 +7,12 @@ pub struct PacketData {
     pub source_port: u16,
     pub dest_port: u16,
     pub queue_id: u16,
-    // Указатели вместо буферов для zero-copy
     pub source_ip_ptr: *const u8,
     pub source_ip_len: usize,
     pub dest_ip_ptr: *const u8,
     pub dest_ip_len: usize,
     pub data_ptr: *const u8,
     pub data_len: usize,
-    // Указатель на оригинальный mbuf для освобождения после обработки
     pub mbuf_ptr: *mut RteMbuf,
 }
 

@@ -39,12 +39,10 @@ impl NumaTopology {
     fn load_topology(&mut self) -> io::Result<()> {
         let numa_path = Path::new("/sys/devices/system/node");
         if !numa_path.exists() {
-            // System does not support NUMA or has only one node
             self.num_nodes = 1;
             return Ok(());
         }
 
-        // Find all available NUMA nodes
         let mut nodes = HashSet::new();
         for entry in fs::read_dir(numa_path)? {
             let entry = entry?;
@@ -58,16 +56,13 @@ impl NumaTopology {
             let node_id: usize = filename[4..].parse().unwrap_or(0);
             nodes.insert(node_id);
 
-            // Load CPU information for this node
             self.load_node_cpus(node_id, &path)?;
 
-            // Load memory information for this node
             self.load_node_memory(node_id, &path)?;
         }
 
         self.num_nodes = nodes.len();
 
-        // Load PCI to NUMA mapping
         self.load_pci_numa_mapping()?;
 
         Ok(())
@@ -107,7 +102,6 @@ impl NumaTopology {
 
     /// Loads PCI to NUMA node mapping
     fn load_pci_numa_mapping(&mut self) -> io::Result<()> {
-        // Iterate through PCI devices
         let pci_path = Path::new("/sys/bus/pci/devices");
         if !pci_path.exists() {
             return Ok(());
@@ -118,7 +112,6 @@ impl NumaTopology {
             let path = entry.path();
             let device_id = path.file_name().unwrap().to_string_lossy().to_string();
 
-            // Check if this is a network device
             let is_network = path.join("class").exists() && {
                 let class = read_first_line(path.join("class"))?;
                 class.starts_with("0x02") // 0x02 is the network class
@@ -128,7 +121,6 @@ impl NumaTopology {
                 continue;
             }
 
-            // Try to find the NUMA node for this device
             let numa_node_path = path.join("numa_node");
             if numa_node_path.exists() {
                 if let Ok(node_str) = read_first_line(&numa_node_path) {
@@ -140,11 +132,9 @@ impl NumaTopology {
                 }
             }
 
-            // Get network interface name if available
             if let Ok(netdev_dirs) = fs::read_dir(path.join("net")) {
                 for netdev_entry in netdev_dirs.flatten() {
                     let ifname = netdev_entry.file_name().to_string_lossy().to_string();
-                    // Check if we know the NUMA node for this device
                     if let Some(&node_id) = self.device_node.get(&device_id) {
                         self.nic_node.insert(ifname, node_id);
                     }
@@ -192,10 +182,8 @@ impl NumaTopology {
         let mut socket_mem = Vec::new();
 
         if self.num_nodes <= 1 {
-            // Single NUMA node or non-NUMA system
             socket_mem.push(format!("--socket-mem={}", mb_per_node));
         } else {
-            // Multi-NUMA system: allocate memory for each node
             let socket_mem_values = (0..self.num_nodes)
                 .map(|_| mb_per_node.to_string())
                 .collect::<Vec<String>>()
@@ -215,25 +203,21 @@ impl NumaTopology {
         for node_id in 0..self.num_nodes {
             println!("\nNUMA Node {}:", node_id);
 
-            // Print cores for this node
             if let Some(cores) = self.node_cores.get(&node_id) {
                 println!("  All logical cores: {:?}", cores);
 
-                // Get physical cores (non-HT) for this node
                 let physical_cores = self.get_node_physical_cores(node_id, cpu_topology);
                 println!("  Physical cores (excluding core 0): {:?}", physical_cores);
             } else {
                 println!("  No cores found");
             }
 
-            // Print memory info for this node
             if let Some(mem_info) = self.node_memory.get(&node_id) {
                 for mem_line in mem_info {
                     println!("  Memory: {}", mem_line);
                 }
             }
 
-            // Print network devices on this node
             println!("  Network interfaces:");
             let mut found = false;
             for (ifname, &if_node) in &self.nic_node {

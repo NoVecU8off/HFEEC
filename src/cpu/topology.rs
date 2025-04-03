@@ -175,7 +175,6 @@ impl CpuTopology {
         let core_mask = self.generate_core_mask();
         args.push(format!("--lcores={}", core_mask));
 
-        // Add master-lcore, usually core 0
         args.push("--master-lcore=0".to_string());
 
         args
@@ -197,7 +196,6 @@ impl CpuTopology {
             }
         }
 
-        // If no information is available, assume it's a primary core
         true
     }
 
@@ -220,7 +218,6 @@ impl CpuTopology {
             let cores = self.get_all_socket_cores(socket_id);
             println!("  Socket {}: {:?}", socket_id, cores);
 
-            // Show information about primary logical cores for this socket
             let primary_cores: Vec<usize> = cores
                 .iter()
                 .filter(|&&id| self.is_primary_logical_core(id))

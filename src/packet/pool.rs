@@ -21,7 +21,6 @@ impl PacketDataPool {
         let queue = Arc::new(ArrayQueue::new(capacity));
         let mut allocated_memory = None;
 
-        // Если указан узел NUMA и NUMA доступна, выделяем память на этом узле
         if let Some(node) = numa_node {
             if NumaAllocator::is_available() {
                 println!(
@@ -29,18 +28,14 @@ impl PacketDataPool {
                     node
                 );
 
-                // Расчет размера необходимой памяти
                 let packet_size = std::mem::size_of::<PacketData>();
                 let total_size = packet_size * capacity;
 
-                // Выделение памяти на указанном узле NUMA
                 let memory = NumaAllocator::alloc_on_node(total_size, node);
 
                 if !memory.is_null() {
-                    // Запоминаем выделенную память для последующего освобождения
                     allocated_memory = Some((memory, total_size));
 
-                    // Создаем объекты PacketData в выделенной памяти
                     let memory_slice =
                         unsafe { std::slice::from_raw_parts_mut(memory as *mut u8, total_size) };
 
@@ -48,13 +43,10 @@ impl PacketDataPool {
                         let offset = i * packet_size;
                         let packet_ptr = memory_slice[offset..].as_mut_ptr() as *mut PacketData;
 
-                        // Инициализация нового объекта PacketData
                         unsafe {
                             std::ptr::write(packet_ptr, PacketData::new());
 
-                            // Добавление в очередь
                             if queue.push(std::ptr::read(packet_ptr)).is_err() {
-                                // Если очередь заполнена, выходим из цикла
                                 break;
                             }
                         }
@@ -67,7 +59,6 @@ impl PacketDataPool {
             }
         }
 
-        // Если NUMA не доступна или выделение не удалось, используем обычное выделение памяти
         if allocated_memory.is_none() {
             println!("Creating packet pool with regular memory allocation");
             for _ in 0..capacity {
@@ -88,8 +79,6 @@ impl PacketDataPool {
         match self.queue.pop() {
             Some(packet) => packet,
             None => {
-                // Если пул пуст, создаем новый пакет
-                // Примечание: В идеале стоит обрабатывать этот случай как ошибку
                 println!("Warning: Packet pool is empty, creating new packet");
                 PacketData::new()
             }
@@ -98,7 +87,6 @@ impl PacketDataPool {
 
     /// Возвращает пакет в пул
     pub fn release(&self, mut packet: PacketData) {
-        // Обнуляем указатели перед возвратом в пул
         packet.source_ip_ptr = std::ptr::null();
         packet.source_ip_len = 0;
         packet.dest_ip_ptr = std::ptr::null();
@@ -107,7 +95,6 @@ impl PacketDataPool {
         packet.data_len = 0;
         packet.mbuf_ptr = std::ptr::null_mut();
 
-        // Возвращаем в пул
         if self.queue.push(packet).is_err() {
             println!("Warning: Failed to return packet to pool (pool is full)");
         }
@@ -121,7 +108,6 @@ impl PacketDataPool {
 
 impl Drop for PacketDataPool {
     fn drop(&mut self) {
-        // Освобождаем память, выделенную через NUMA
         if let Some((ptr, size)) = self.allocated_memory {
             println!("Freeing NUMA-allocated memory for packet pool");
             NumaAllocator::free(ptr, size);
