@@ -234,6 +234,9 @@ impl NumaNode {
             // DPDK rx_burst буфер
             let mut rx_pkts = vec![std::ptr::null_mut(); burst_size as usize];
 
+            // Константа для предзагрузки (сколько пакетов вперед)
+            const PREFETCH_AHEAD: usize = 4;
+
             // Основной цикл обработки
             while running.load(Ordering::SeqCst) {
                 // Вызов DPDK rx_burst
@@ -246,7 +249,34 @@ impl NumaNode {
                     )
                 };
 
+                // Первая предзагрузка нескольких пакетов
+                for i in 0..std::cmp::min(PREFETCH_AHEAD, nb_rx as usize) {
+                    unsafe {
+                        // Предзагружаем структуру mbuf
+                        let pkt = rx_pkts[i];
+                        rte_prefetch0(pkt as *const libc::c_void);
+
+                        // Предзагружаем данные пакета
+                        let data = crate::dpdk::ffi::rte_pktmbuf_mtod(pkt, std::ptr::null());
+                        rte_prefetch0(data);
+                    }
+                }
+
                 for i in 0..nb_rx as usize {
+                    // Предзагрузка следующего пакета (с опережением)
+                    if i + PREFETCH_AHEAD < nb_rx as usize {
+                        unsafe {
+                            let next_pkt = rx_pkts[i + PREFETCH_AHEAD];
+                            // Предзагружаем следующий пакет в L1 кеш
+                            rte_prefetch0(next_pkt as *const libc::c_void);
+
+                            // Предзагружаем данные следующего пакета
+                            let next_data =
+                                crate::dpdk::ffi::rte_pktmbuf_mtod(next_pkt, std::ptr::null());
+                            rte_prefetch0(next_data);
+                        }
+                    }
+
                     let pkt = rx_pkts[i];
 
                     // Извлекаем данные пакета
@@ -385,5 +415,21 @@ impl NumaNode {
 impl Drop for NumaNode {
     fn drop(&mut self) {
         self.stop_workers();
+    }
+}
+
+// Функция для предзагрузки данных в кеш
+#[inline(always)]
+unsafe fn rte_prefetch0(p: *const libc::c_void) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::arch::x86_64::_mm_prefetch(p as *const i8, std::arch::x86_64::_MM_HINT_T0);
+    }
+
+    // Для других архитектур можно добавить соответствующие инструкции prefetch
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        // На других архитектурах используем линкованный DPDK
+        crate::dpdk::ffi::rte_prefetch0(p);
     }
 }
