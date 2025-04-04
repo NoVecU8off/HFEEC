@@ -38,17 +38,38 @@ impl PacketData {
         }
     }
 
+    /// Сбрасывает все поля в исходное состояние
+    /// Используется при возврате в пул
+    #[inline(always)]
+    pub fn reset(&mut self) {
+        self.data_ptr = std::ptr::null();
+        self.data_len = 0;
+
+        self.source_port = 0;
+        self.dest_port = 0;
+        self.queue_id = 0;
+
+        self.source_ip_ptr = std::ptr::null();
+        self.source_ip_len = 0;
+        self.dest_ip_ptr = std::ptr::null();
+        self.dest_ip_len = 0;
+        self.mbuf_ptr = std::ptr::null_mut();
+    }
+
     /// Получает исходный IP-адрес в виде среза
+    #[inline(always)]
     pub fn get_source_ip(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.source_ip_ptr, self.source_ip_len) }
     }
 
     /// Получает IP-адрес назначения в виде среза
+    #[inline(always)]
     pub fn get_dest_ip(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.dest_ip_ptr, self.dest_ip_len) }
     }
 
     /// Получает данные пакета в виде среза
+    #[inline(always)]
     pub fn get_data(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.data_ptr, self.data_len) }
     }

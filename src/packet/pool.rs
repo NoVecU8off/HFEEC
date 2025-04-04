@@ -87,13 +87,7 @@ impl PacketDataPool {
 
     /// Возвращает пакет в пул
     pub fn release(&self, mut packet: PacketData) {
-        packet.source_ip_ptr = std::ptr::null();
-        packet.source_ip_len = 0;
-        packet.dest_ip_ptr = std::ptr::null();
-        packet.dest_ip_len = 0;
-        packet.data_ptr = std::ptr::null();
-        packet.data_len = 0;
-        packet.mbuf_ptr = std::ptr::null_mut();
+        packet.reset();
 
         if self.queue.push(packet).is_err() {
             println!("Warning: Failed to return packet to pool (pool is full)");
