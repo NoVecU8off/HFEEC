@@ -33,6 +33,7 @@ pub const ETH_RSS_L4_SRC_ONLY: u64 = 0x100;
 pub const DEV_RX_OFFLOAD_CHECKSUM: u64 = 0x00000001;
 pub const DEV_RX_OFFLOAD_TCP_LRO: u64 = 0x00000010;
 pub const DEV_RX_OFFLOAD_SCATTER: u64 = 0x00000100;
+pub const DEV_RX_OFFLOAD_TCP_GRO: u64 = 0x00000040;
 
 // Константы для TX offload флагов
 pub const DEV_TX_OFFLOAD_MBUF_FAST_FREE: u64 = 0x00000001;

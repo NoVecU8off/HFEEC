@@ -29,6 +29,8 @@ pub struct DpdkConfig {
     pub use_lro: bool,
     pub use_udp_tso: bool,
     pub max_tso_segment_size: u16,
+    pub use_gro: bool,
+    pub max_gro_size: u16,
 }
 
 impl Default for DpdkConfig {
@@ -64,6 +66,8 @@ impl Default for DpdkConfig {
             use_lro: false,
             use_udp_tso: false,
             max_tso_segment_size: 1460, // Типичный размер MSS (MTU - заголовки TCP/IP)
+            use_gro: false,
+            max_gro_size: 65535,
         }
     }
 }
@@ -110,6 +114,15 @@ impl DpdkConfig {
         self.use_udp_tso = true;
         if let Some(mss) = max_segment_size {
             self.max_tso_segment_size = mss;
+        }
+        self
+    }
+
+    /// Включает поддержку Generic Receive Offload (GRO)
+    pub fn with_gro(mut self, max_size: Option<u16>) -> Self {
+        self.use_gro = true;
+        if let Some(size) = max_size {
+            self.max_gro_size = size;
         }
         self
     }

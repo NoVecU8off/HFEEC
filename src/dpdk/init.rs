@@ -154,6 +154,16 @@ pub fn configure_port_for_node(
         eth_conf.rxmode.offloads |= ffi::DEV_RX_OFFLOAD_TCP_LRO;
     }
 
+    // Настройка GRO
+    if dpdk_config.use_gro {
+        println!(
+            "Enabling Generic Receive Offload (GRO) with max size: {}",
+            dpdk_config.max_gro_size
+        );
+        eth_conf.rxmode.offloads |= ffi::DEV_RX_OFFLOAD_TCP_GRO;
+        eth_conf.rxmode.offloads |= ffi::DEV_RX_OFFLOAD_SCATTER;
+    }
+
     let ret = unsafe {
         ffi::rte_eth_dev_configure(
             port_id,
