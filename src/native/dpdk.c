@@ -118,6 +118,8 @@ int dpdk_extract_packet_data(
  * @param data Указатель на данные для отправки
  * @param data_len Длина данных
  * @param use_tcp Использовать TCP (1) или UDP (0)
+ * @param use_tso Использовать TCP Segmentation Offload для TCP или UDP TSO для UDP (1) или нет (0)
+ * @param mss Максимальный размер сегмента для TSO (0 - значение по умолчанию)
  * @return Указатель на созданный пакет или NULL в случае ошибки
  */
 struct rte_mbuf* dpdk_create_packet(
@@ -128,7 +130,9 @@ struct rte_mbuf* dpdk_create_packet(
     uint16_t dst_port,
     const uint8_t *data,
     uint32_t data_len,
-    int use_tcp
+    int use_tcp,
+    int use_tso,
+    uint16_t mss
 ) {
     struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
     if (mbuf == NULL) {
@@ -173,6 +177,7 @@ struct rte_mbuf* dpdk_create_packet(
         memcpy(pkt_data, data, data_len);
     }
 
+    // Базовая настройка offload флагов
     mbuf->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM;  
     mbuf->l2_len = sizeof(struct rte_ether_hdr);  
     mbuf->l3_len = sizeof(struct rte_ipv4_hdr);  
@@ -185,11 +190,36 @@ struct rte_mbuf* dpdk_create_packet(
         
         tcp_hdr->src_port = rte_cpu_to_be_16(src_port);
         tcp_hdr->dst_port = rte_cpu_to_be_16(dst_port);
-        tcp_hdr->data_off = 0x50;
+        tcp_hdr->data_off = 0x50;  // Смещение данных 5 * 4 = 20 байт (стандартный заголовок TCP)
         tcp_hdr->rx_win = rte_cpu_to_be_16(8192); 
         
         mbuf->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
+        mbuf->l4_len = sizeof(struct rte_tcp_hdr);
         tcp_hdr->cksum = rte_ipv4_phdr_cksum(ip_hdr, mbuf->ol_flags);
+        
+        // Если включен TSO и пакет TCP, настраиваем TSO
+        if (use_tso && data_len > 0) {
+            // Используем заданный MSS или значение по умолчанию
+            uint16_t tso_mss = mss > 0 ? mss : 1460;
+            
+            // Проверяем, что размер данных больше MSS, иначе TSO не нужен
+            if (data_len > tso_mss) {
+                mbuf->ol_flags |= RTE_MBUF_F_TX_TCP_SEG;
+                mbuf->tso_segsz = tso_mss;
+                
+                // TCP Payload Length
+                mbuf->pkt_len = eth_hdr_size + ip_hdr_size + l4_hdr_size + data_len;
+                mbuf->data_len = mbuf->pkt_len;
+                
+                // TCP sequence number (для TSO это начальный номер последовательности)
+                tcp_hdr->sent_seq = rte_cpu_to_be_32(0);
+                
+                // Устанавливаем флаг PSH только для последнего сегмента
+                tcp_hdr->tcp_flags = RTE_TCP_ACK_FLAG;  // ACK для всех сегментов
+                
+                printf("TSO enabled for packet, data_len: %u, mss: %u\n", data_len, tso_mss);
+            }
+        }
     } else {
         struct rte_udp_hdr *udp_hdr = (struct rte_udp_hdr *)l4_hdr;
         memset(udp_hdr, 0, sizeof(struct rte_udp_hdr));
@@ -199,7 +229,28 @@ struct rte_mbuf* dpdk_create_packet(
         udp_hdr->dgram_len = rte_cpu_to_be_16(l4_hdr_size + data_len);
         
         mbuf->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM;
+        mbuf->l4_len = sizeof(struct rte_udp_hdr);
         udp_hdr->dgram_cksum = rte_ipv4_phdr_cksum(ip_hdr, mbuf->ol_flags);
+        
+        // Если включен TSO и пакет UDP, настраиваем UDP TSO (GSO)
+        if (use_tso && data_len > 0) {
+            // Максимальный размер фрагмента UDP (обычно MTU - заголовки IP/UDP)
+            uint16_t tso_mss = mss > 0 ? mss : 1472;  // типичный размер для UDP 1500-28
+            
+            // Проверяем, что размер данных больше максимального размера фрагмента
+            if (data_len > tso_mss) {
+                // Для UDP TSO (иногда называемого UDP Fragmentation Offload - UFO)
+                // нужно установить другие флаги и правильно настроить mbuf
+                mbuf->ol_flags |= RTE_MBUF_F_TX_UDP_SEG;  // флаг для UDP TSO
+                mbuf->tso_segsz = tso_mss;
+                
+                // UDP Payload Length
+                mbuf->pkt_len = eth_hdr_size + ip_hdr_size + l4_hdr_size + data_len;
+                mbuf->data_len = mbuf->pkt_len;
+                
+                printf("UDP TSO enabled for packet, data_len: %u, mss: %u\n", data_len, tso_mss);
+            }
+        }
     }
     
     return mbuf;

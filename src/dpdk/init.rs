@@ -103,7 +103,8 @@ pub fn configure_port_for_node(
 
     let mut eth_conf = default_eth_config();
 
-    let enable_rss = dpdk_config.enable_rss && dpdk_config.num_rx_queues > 1;
+    // Настраиваем Receive Side Scaling (RSS)
+    let enable_rss = dpdk_config.use_rss && dpdk_config.num_rx_queues > 1;
     if enable_rss {
         eth_conf.rxmode.mq_mode = ffi::ETH_MQ_RX_RSS;
         eth_conf.rx_adv_conf.rss_conf.rss_hf = dpdk_config.rss_hf;
@@ -114,8 +115,43 @@ pub fn configure_port_for_node(
         }
     }
 
-    if dpdk_config.enable_jumbo_frames {
+    // Настраиваем размер Jumbo фреймов
+    if dpdk_config.use_jumbo_frames {
         eth_conf.rxmode.max_rx_pkt_len = dpdk_config.max_rx_pkt_len;
+        // Для Jumbo фреймов требуется scatter
+        eth_conf.rxmode.offloads |= ffi::DEV_RX_OFFLOAD_SCATTER;
+    }
+
+    // Включаем аппаратный подсчет контрольных сумм
+    if dpdk_config.use_hw_checksum {
+        eth_conf.rxmode.offloads |= ffi::DEV_RX_OFFLOAD_CHECKSUM;
+        eth_conf.txmode.offloads |= ffi::DEV_TX_OFFLOAD_IPV4_CKSUM
+            | ffi::DEV_TX_OFFLOAD_UDP_CKSUM
+            | ffi::DEV_TX_OFFLOAD_TCP_CKSUM;
+    }
+
+    // Настройка TSO
+    if dpdk_config.use_tso {
+        println!(
+            "Enabling TCP Segmentation Offload (TSO) with MSS: {}",
+            dpdk_config.max_tso_segment_size
+        );
+        eth_conf.txmode.offloads |= ffi::DEV_TX_OFFLOAD_TCP_TSO | ffi::DEV_TX_OFFLOAD_MULTI_SEGS;
+    }
+
+    // Настройка UDP TSO (GSO)
+    if dpdk_config.use_udp_tso {
+        println!(
+            "Enabling UDP TSO (GSO) with segment size: {}",
+            dpdk_config.max_tso_segment_size
+        );
+        eth_conf.txmode.offloads |= ffi::DEV_TX_OFFLOAD_UDP_TSO | ffi::DEV_TX_OFFLOAD_MULTI_SEGS;
+    }
+
+    // Настройка LRO
+    if dpdk_config.use_lro {
+        println!("Enabling Large Receive Offload (LRO)");
+        eth_conf.rxmode.offloads |= ffi::DEV_RX_OFFLOAD_TCP_LRO;
     }
 
     let ret = unsafe {
@@ -134,6 +170,7 @@ pub fn configure_port_for_node(
         ));
     }
 
+    // Настройка RX и TX очередей
     for q in 0..dpdk_config.num_rx_queues {
         let queue_socket_id = match dpdk_config.use_numa_on_socket {
             true => port_socket_id,

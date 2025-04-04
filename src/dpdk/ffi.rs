@@ -29,6 +29,25 @@ pub const ETH_RSS_NONFRAG_IPV4_UDP: u64 = 0x80;
 pub const ETH_RSS_L4_DST_ONLY: u64 = 0x200;
 pub const ETH_RSS_L4_SRC_ONLY: u64 = 0x100;
 
+// Константы для RX offload флагов
+pub const DEV_RX_OFFLOAD_CHECKSUM: u64 = 0x00000001;
+pub const DEV_RX_OFFLOAD_TCP_LRO: u64 = 0x00000010;
+pub const DEV_RX_OFFLOAD_SCATTER: u64 = 0x00000100;
+
+// Константы для TX offload флагов
+pub const DEV_TX_OFFLOAD_MBUF_FAST_FREE: u64 = 0x00000001;
+pub const DEV_TX_OFFLOAD_IPV4_CKSUM: u64 = 0x00000002;
+pub const DEV_TX_OFFLOAD_UDP_CKSUM: u64 = 0x00000004;
+pub const DEV_TX_OFFLOAD_TCP_CKSUM: u64 = 0x00000008;
+pub const DEV_TX_OFFLOAD_SCTP_CKSUM: u64 = 0x00000010;
+pub const DEV_TX_OFFLOAD_TCP_TSO: u64 = 0x00000020;
+pub const DEV_TX_OFFLOAD_UDP_TSO: u64 = 0x00000040;
+pub const DEV_TX_OFFLOAD_MULTI_SEGS: u64 = 0x00000080;
+
+// Флаги пакетов (метки для mbuf)
+pub const RTE_MBUF_F_TX_TCP_SEG: u64 = 1 << 9;
+pub const RTE_MBUF_F_TX_UDP_SEG: u64 = 1 << 10;
+
 #[repr(C)]
 pub struct RteEthConf {
     pub rxmode: RteEthRxMode,
