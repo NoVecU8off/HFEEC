@@ -44,9 +44,6 @@ fn main() {
     // Включаем поддержку Jumbo Frames
     dpdk_config = dpdk_config.with_jumbo_frames(9000);
 
-    // Включаем пакетный режим обработки
-    dpdk_config = dpdk_config.with_batch_mode(64);
-
     // Распределяем интерфейсы по узлам NUMA
     if let Err(e) = numa_manager.distribute_interfaces(&dpdk_config) {
         eprintln!("Failed to distribute interfaces: {}", e);
@@ -82,7 +79,6 @@ fn main() {
         }
     });
 
-    // Запускаем обработку пакетов
     if let Err(e) = numa_manager.start_packet_processing(packet_handler, &dpdk_config) {
         eprintln!("Failed to start packet processing: {}", e);
         return;
@@ -90,14 +86,9 @@ fn main() {
 
     println!("Packet processing started. Press Ctrl+C to stop.");
 
-    // Основной цикл приложения
-    // В реальном коде здесь была бы логика обработки сигналов для корректного завершения
     loop {
         thread::sleep(Duration::from_secs(1));
     }
 
-    // Этот код никогда не выполнится в текущей реализации, но в реальном приложении
-    // здесь должна быть остановка обработки пакетов при получении сигнала завершения
     // numa_manager.stop_packet_processing();
-    // println!("Packet processing stopped, exiting.");
 }

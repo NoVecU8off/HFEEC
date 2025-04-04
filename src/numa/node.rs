@@ -6,12 +6,12 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 
+use crate::cpu::topology::CpuTopology;
 use crate::dpdk::config::DpdkConfig;
 use crate::numa::ffi::NumaAllocator;
 use crate::numa::topology::NumaTopology;
 use crate::packet::data::PacketData;
 use crate::packet::pool::PacketDataPool;
-use crate::{cpu::topology::CpuTopology, packet::batch::PacketBatchPool};
 
 /// Информация о DPDK порте
 #[derive(Debug)]
@@ -144,6 +144,7 @@ impl NumaNode {
         let packet_pool = match &self.packet_pool {
             Some(pool) => Arc::clone(pool),
             None => {
+                // Инициализируем пул с емкостью в 4 раза больше размера burst
                 self.init_packet_pool((burst_size * 4) as usize)?;
                 Arc::clone(self.packet_pool.as_ref().unwrap())
             }
@@ -204,12 +205,6 @@ impl NumaNode {
         let running = self.running.clone();
         let node_id = self.node_id;
 
-        let batch_pool = Arc::new(PacketBatchPool::new(
-            16, // Можно настроить под нужды приложения
-            burst_size as usize,
-            packet_pool,
-        ));
-
         let thread = thread::spawn(move || {
             core_affinity::set_for_current(core_id);
 
@@ -223,22 +218,32 @@ impl NumaNode {
 
             const PREFETCH_AHEAD: usize = 4;
 
-            while running.load(Ordering::SeqCst) {
-                let mut batch = batch_pool.acquire();
+            let mut rx_pkts = vec![std::ptr::null_mut(); burst_size as usize];
 
+            while running.load(Ordering::SeqCst) {
                 let nb_rx = unsafe {
                     crate::dpdk::ffi::rte_eth_rx_burst(
                         port_id,
                         queue_id,
-                        batch.get_mbufs_ptr(),
+                        rx_pkts.as_mut_ptr(),
                         burst_size as u16,
                     )
-                } as usize;
+                };
 
-                if nb_rx > 0 {
-                    for i in 0..std::cmp::min(PREFETCH_AHEAD, nb_rx) {
+                for i in 0..std::cmp::min(PREFETCH_AHEAD, nb_rx as usize) {
+                    unsafe {
+                        let pkt = rx_pkts[i];
+                        rte_prefetch0(pkt as *const libc::c_void);
+
+                        let data = crate::dpdk::ffi::rte_pktmbuf_mtod(pkt, std::ptr::null());
+                        rte_prefetch0(data);
+                    }
+                }
+
+                for i in 0..nb_rx as usize {
+                    if i + PREFETCH_AHEAD < nb_rx as usize {
                         unsafe {
-                            let pkt = *batch.get_mbufs_ptr().add(i);
+                            let pkt = rx_pkts[i + PREFETCH_AHEAD];
                             rte_prefetch0(pkt as *const libc::c_void);
 
                             let data = crate::dpdk::ffi::rte_pktmbuf_mtod(pkt, std::ptr::null());
@@ -246,15 +251,53 @@ impl NumaNode {
                         }
                     }
 
-                    batch.fill_from_rx_burst(nb_rx, queue_id);
+                    let pkt = rx_pkts[i];
 
-                    batch.process_all(|q_id, packet| {
-                        packet_handler(q_id, packet);
-                    });
+                    let mut src_ip_ptr = std::ptr::null_mut();
+                    let mut src_ip_len: u32 = 0;
+                    let mut dst_ip_ptr = std::ptr::null_mut();
+                    let mut dst_ip_len: u32 = 0;
+                    let mut src_port: u16 = 0;
+                    let mut dst_port: u16 = 0;
+                    let mut data_ptr = std::ptr::null_mut();
+                    let mut data_len: u32 = 0;
 
-                    batch_pool.release(batch);
-                } else {
-                    batch_pool.release(batch);
+                    let ret = unsafe {
+                        crate::dpdk::ffi::dpdk_extract_packet_data(
+                            pkt,
+                            &mut src_ip_ptr,
+                            &mut src_ip_len,
+                            &mut dst_ip_ptr,
+                            &mut dst_ip_len,
+                            &mut src_port,
+                            &mut dst_port,
+                            &mut data_ptr,
+                            &mut data_len,
+                        )
+                    };
+
+                    if ret == 0 && !data_ptr.is_null() && data_len > 0 {
+                        let mut packet = packet_pool.acquire();
+
+                        packet.source_port = src_port;
+                        packet.dest_port = dst_port;
+                        packet.queue_id = queue_id;
+                        packet.source_ip_ptr = src_ip_ptr;
+                        packet.source_ip_len = src_ip_len as usize;
+                        packet.dest_ip_ptr = dst_ip_ptr;
+                        packet.dest_ip_len = dst_ip_len as usize;
+                        packet.data_ptr = data_ptr;
+                        packet.data_len = data_len as usize;
+                        packet.mbuf_ptr = pkt;
+
+                        packet_handler(queue_id, &packet);
+
+                        unsafe { crate::dpdk::ffi::rte_pktmbuf_free(packet.mbuf_ptr) };
+
+                        packet_pool.release(packet);
+                    } else {
+                        unsafe { crate::dpdk::ffi::rte_pktmbuf_free(pkt) };
+                    }
                 }
             }
         });

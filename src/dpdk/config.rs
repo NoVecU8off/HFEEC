@@ -1,3 +1,4 @@
+// src/dpdk/config.rs
 use std::os::raw::{c_uint, c_ushort};
 
 /// Конфигурация DPDK с поддержкой NUMA
@@ -25,8 +26,6 @@ pub struct DpdkConfig {
     pub max_rx_pkt_len: u32,
     pub enable_hw_checksum: bool,
     pub enable_flow_director: bool,
-    pub batch_mode: bool,
-    pub batch_size: c_uint,
 }
 
 impl Default for DpdkConfig {
@@ -59,8 +58,6 @@ impl Default for DpdkConfig {
             max_rx_pkt_len: 1518, // Стандартный MTU Ethernet
             enable_hw_checksum: true,
             enable_flow_director: false,
-            batch_mode: false,
-            batch_size: 0, // 0 означает, что пакетный режим выключен
         }
     }
 }
@@ -78,13 +75,6 @@ impl DpdkConfig {
     pub fn with_numa_allocation(mut self, num_nodes: usize, mb_per_node: u32) -> Self {
         self.socket_mem = Some(vec![mb_per_node; num_nodes]);
         self.use_numa_on_socket = true;
-        self
-    }
-
-    /// Включает пакетный режим обработки
-    pub fn with_batch_mode(mut self, batch_size: u32) -> Self {
-        self.batch_mode = true;
-        self.batch_size = batch_size as c_uint;
         self
     }
 
