@@ -4,14 +4,15 @@ use crate::dpdk::ffi::RteMbuf;
 /// Структура для хранения данных пакета
 #[repr(C, align(64))]
 pub struct PacketData {
+    // High
     pub data_ptr: *const u8,
     pub data_len: usize,
-
+    // Mid
     pub source_port: u16,
     pub dest_port: u16,
     pub queue_id: u16,
     pub _padding: u16,
-
+    // Low
     pub source_ip_ptr: *const u8,
     pub source_ip_len: usize,
     pub dest_ip_ptr: *const u8,

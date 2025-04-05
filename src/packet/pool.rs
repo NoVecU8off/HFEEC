@@ -29,7 +29,8 @@ impl PacketDataPool {
                 );
 
                 let packet_size = std::mem::size_of::<PacketData>();
-                let total_size = packet_size * capacity;
+                let aligned_size = (packet_size + 63) & !63;
+                let total_size = aligned_size * capacity;
 
                 let memory = NumaAllocator::alloc_on_node(total_size, node);
 
