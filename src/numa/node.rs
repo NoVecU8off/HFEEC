@@ -190,13 +190,7 @@ impl NumaNode {
                 );
             }
 
-            // Создаем локальный пул пакетов для этого потока
-            // с емкостью равной burst_size
             let packet_pool = PacketDataPool::new(burst_size as usize, Some(node_id));
-            println!(
-                "Created thread-local packet pool with capacity {} for core {}",
-                burst_size, core_id.id
-            );
 
             const PREFETCH_AHEAD: usize = 4;
 
@@ -282,9 +276,6 @@ impl NumaNode {
                     }
                 }
             }
-
-            // Пул пакетов будет освобожден автоматически при выходе из функции
-            // благодаря реализации Drop для PacketDataPool
         });
 
         Worker {
