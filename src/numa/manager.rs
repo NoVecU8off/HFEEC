@@ -105,9 +105,6 @@ impl NumaManager {
             for port in &node.local_ports {
                 configure_port_for_node(node, port.port_id, dpdk_config)?;
             }
-
-            let pool_capacity = (dpdk_config.burst_size * 4) as usize;
-            node.init_packet_pool(pool_capacity)?;
         }
 
         Ok(())

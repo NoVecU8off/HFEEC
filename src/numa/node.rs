@@ -42,8 +42,6 @@ pub struct NumaNode {
     pub local_cpus: Vec<CoreId>,
     /// Список локальных NIC (сетевых карт)
     pub local_ports: Vec<DpdkPort>,
-    /// Пул пакетов, выделенный в локальной памяти
-    pub packet_pool: Option<Arc<PacketDataPool>>,
     /// Рабочие потоки
     pub workers: Vec<Worker>,
     /// Флаг работы
@@ -76,7 +74,6 @@ impl NumaNode {
             node_id,
             local_cpus,
             local_ports: Vec::new(),
-            packet_pool: None,
             workers: Vec::new(),
             running: Arc::new(AtomicBool::new(false)),
         }
@@ -119,18 +116,6 @@ impl NumaNode {
         true
     }
 
-    /// Инициализирует пул пакетов в локальной памяти
-    pub fn init_packet_pool(&mut self, capacity: usize) -> Result<(), String> {
-        let pool = PacketDataPool::new(capacity, Some(self.node_id));
-        self.packet_pool = Some(Arc::new(pool));
-
-        println!(
-            "Initialized packet pool with capacity {} on NUMA node {}",
-            capacity, self.node_id
-        );
-        Ok(())
-    }
-
     /// Запускает рабочие потоки для обработки пакетов
     pub fn start_workers(
         &mut self,
@@ -140,15 +125,6 @@ impl NumaNode {
         if self.running.load(Ordering::SeqCst) {
             return Err("Workers already running".to_string());
         }
-
-        let packet_pool = match &self.packet_pool {
-            Some(pool) => Arc::clone(pool),
-            None => {
-                // Инициализируем пул с емкостью в 4 раза больше размера burst
-                self.init_packet_pool((burst_size * 4) as usize)?;
-                Arc::clone(self.packet_pool.as_ref().unwrap())
-            }
-        };
 
         self.running.store(true, Ordering::SeqCst);
 
@@ -176,7 +152,6 @@ impl NumaNode {
                     queue_id,
                     core_id,
                     packet_handler.clone(),
-                    packet_pool.clone(),
                     burst_size,
                 );
 
@@ -199,7 +174,6 @@ impl NumaNode {
         queue_id: u16,
         core_id: CoreId,
         packet_handler: PacketHandler,
-        packet_pool: Arc<PacketDataPool>,
         burst_size: u32,
     ) -> Worker {
         let running = self.running.clone();
@@ -215,6 +189,14 @@ impl NumaNode {
                     port_id, queue_id, node_id, core_id.id
                 );
             }
+
+            // Создаем локальный пул пакетов для этого потока
+            // с емкостью равной burst_size
+            let packet_pool = PacketDataPool::new(burst_size as usize, Some(node_id));
+            println!(
+                "Created thread-local packet pool with capacity {} for core {}",
+                burst_size, core_id.id
+            );
 
             const PREFETCH_AHEAD: usize = 4;
 
@@ -300,6 +282,9 @@ impl NumaNode {
                     }
                 }
             }
+
+            // Пул пакетов будет освобожден автоматически при выходе из функции
+            // благодаря реализации Drop для PacketDataPool
         });
 
         Worker {
